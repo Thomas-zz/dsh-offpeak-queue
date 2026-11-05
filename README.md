@@ -9,10 +9,7 @@
 >
 > **In one line:** a DSH plugin that lets you queue a task from any conversation with **zero model calls at queue time**, then runs it automatically in that same conversation during DeepSeek's off-peak (half-price) hours.
 
-![闲时任务面板](docs/screenshots/panel-dark.png)
-
-> 截图中的任务内容均已打码（mosaic）以避免泄露个人任务。  
-> Screenshots are redacted: task text, conversation content and workspace names are mosaicked.
+![闲时任务队列面板](docs/screenshots/panel-queue.png)
 
 ---
 
@@ -93,17 +90,11 @@ DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
 4. 到闲时（半价时段）任务在同一条对话里自动执行，对话中出现一张「插件状态更新」触发卡（不是冒充用户发出的消息）。
 5. 侧栏「闲时任务」面板查看队列和省钱统计；面板图标上的绿点表示有任务完成且未查看，点任务标题可跳到来源对话。
 
-![输入框里的闲时任务标签](docs/screenshots/composer-chip.png)
+![输入框里的闲时任务标签](docs/screenshots/composer.png)
 
-![任务状态卡与立即执行](docs/screenshots/run-now.png)
+![对话里的任务条](docs/screenshots/task-bar.png)
 
 ## 截图
-
-> 所有截图中的任务内容、对话正文、会话标题与工作区名均已打码。
-
-| 面板（暗色） | 面板（亮色） |
-|---|---|
-| ![面板 暗色](docs/screenshots/panel-dark.png) | ![面板 亮色](docs/screenshots/panel-light.png) |
 
 | 统计 | 设置 |
 |---|---|
