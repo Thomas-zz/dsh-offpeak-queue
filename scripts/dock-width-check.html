@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>dock capsule width check</title>
+<style>
+  /* --- platform theme tokens (dark) --- */
+  :root{
+    --dsh-chat-content-width: 748px;
+    --dsh-composer-card-max-width: calc(var(--dsh-chat-content-width) + 32px);
+    --dsh-composer-side-clearance: 16px;
+    --dsh-composer-dock-inset: 8px;
+    --dsw-alias-bg-base: #1a1a1a;
+    --dsw-alias-bg-layer-1: #232323;
+    --dsw-alias-bg-overlay: #2a2a2a;
+    --dsw-alias-border-l1: rgba(255,255,255,.10);
+    --dsw-alias-border-l2: rgba(255,255,255,.16);
+    --dsw-alias-label-primary: #e8e8e8;
+    --dsw-alias-label-secondary: #a8a8a8;
+    --dsw-alias-label-tertiary: #7d7d7d;
+    --dsw-alias-interactive-bg-hover: rgba(255,255,255,.06);
+    --dsw-alias-turn-trigger-bg: #232323;
+    --dsw-specific-input-major: #232323;
+    --dsw-specific-menu: #2a2a2a;
+    --dsw-radius-xl: 14px;
+    --dsw-radius-lg: 12px;
+    --dsw-radius-md: 10px;
+    --dsw-elevation-soft: 0 1px 2px rgba(0,0,0,.3);
+    --dsh-content-font-size: 14px;
+    --dsh-content-font-delta: 0px;
+    --dsh-content-font-delta-secondary: 0px;
+    --dsh-content-font-size-secondary: 13px;
+  }
+  body{margin:0;background:#111;color:var(--dsw-alias-label-primary);font:14px/22px -apple-system,"PingFang SC",sans-serif}
+
+  /* --- the chat pane: as wide as a real window's conversation area --- */
+  .chatPane{width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:8px;padding:24px 0}
+  /* platform: .tnXGgG_column */
+  .column{max-width:var(--dsh-chat-content-width);width:100%;margin:0 auto;display:flex;flex-direction:column;gap:8px}
+  .userBubble{align-self:flex-end;max-width:520px;background:#2c2c2c;border-radius:14px;padding:10px 16px}
+  /* platform: .CuF05a_root */
+  .trigger{border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-xl);background:var(--dsw-alias-turn-trigger-bg);min-width:0;padding:12px 16px;color:var(--dsw-alias-label-tertiary)}
+  .label{font-size:11px;color:#8a8a8a;letter-spacing:.04em;text-transform:uppercase;margin:16px 0 4px}
+
+  /* --- dock slot: the composer seat, wider than the content column --- */
+  .composerSeat{width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:6px;padding-bottom:24px}
+  /* platform: .JZLxKW_root + .JZLxKW_stack + .JZLxKW_card */
+  .composerRoot{padding:0 var(--dsh-composer-side-clearance) 4px;display:flex;flex-direction:column;align-items:center}
+  .composerStack{width:100%;max-width:var(--dsh-composer-card-max-width);display:flex;flex-direction:column}
+  .composerCard{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-elevation-soft);padding:16px;color:var(--dsw-alias-label-tertiary)}
+
+  /* --- the plugin's dock capsule, byte-for-byte from client.js --- */
+  .pluginDockSlot{display:flex;flex-direction:column;width:1100px}
+  .dsh-oq-taskBar{box-sizing:border-box;display:flex;flex-direction:column;margin:0 auto;width:100%;max-width:var(--dsh-chat-content-width, 748px);border:0.5px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);font-size:13px;line-height:20px;overflow:hidden}
+  .dsh-oq-taskBarHead{display:flex;align-items:center;gap:6px;box-sizing:border-box;min-width:0;border:0;border-radius:inherit;background:transparent;color:inherit;font:inherit;font-size:13px;line-height:20px;text-align:left;padding:5px 10px 5px 6px;cursor:pointer}
+  .dsh-oq-taskBarGlyph{display:inline-flex;align-items:center;justify-content:center;flex:none;width:18px;height:18px;border-radius:6px;background:rgba(120,170,255,.12);color:#8ab4ff}
+  .dsh-oq-taskBarText{flex:none;font-weight:500;color:var(--dsw-alias-label-primary);white-space:nowrap}
+  .dsh-oq-taskBarTitle{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
+  .dsh-oq-taskBarMeta{flex:none;color:var(--dsw-alias-label-secondary);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .dsh-oq-taskBarChevron{margin-left:auto;color:var(--dsw-alias-label-secondary)}
+
+  #report{font:12px/18px ui-monospace,monospace;color:#9cd;white-space:pre;padding:16px 24px}
+</style>
+</head>
+<body>
+<div class="chatPane">
+  <div class="label">对话内容列 (chat content column)</div>
+  <div class="column">
+    <div class="userBubble">你看看你这右边，这几个标题跟正文，是靠左对齐呢，还是右对齐呢？</div>
+    <div class="trigger" id="triggerCard">插件状态更新</div>
+  </div>
+</div>
+
+<div class="composerSeat">
+  <div class="label">输入框上方 dock（插件胶囊 vs 输入框）</div>
+  <div class="pluginDockSlot">
+    <div class="dsh-oq-taskBar" id="taskBar">
+      <button class="dsh-oq-taskBarHead" type="button">
+        <span class="dsh-oq-taskBarGlyph">◐</span>
+        <span class="dsh-oq-taskBarText">闲时任务已取消</span>
+        <span class="dsh-oq-taskBarTitle">你看看吧你这右边，这几个标题跟正文，是靠左对齐呢…</span>
+        <span class="dsh-oq-taskBarMeta">取消于 今天 23:31</span>
+        <span class="dsh-oq-taskBarChevron">⌄</span>
+      </button>
+    </div>
+  </div>
+  <div class="composerRoot">
+    <div class="composerStack">
+      <div class="composerCard" id="composerCard">发消息或创建任务，/ 调用指令，@ 文件或对话</div>
+    </div>
+  </div>
+</div>
+
+<div id="report"></div>
+<script>
+  const boxes = {
+    'trigger card (插件状态更新)': document.getElementById('triggerCard'),
+    'plugin dock capsule': document.getElementById('taskBar'),
+    'composer pill': document.getElementById('composerCard'),
+  }
+  const lines = []
+  for (const [name, node] of Object.entries(boxes)) {
+    const rect = node.getBoundingClientRect()
+    lines.push(`${name.padEnd(30)} left=${rect.left.toFixed(1).padStart(7)} width=${rect.width.toFixed(1).padStart(7)}`)
+  }
+  document.getElementById('report').textContent = lines.join('\n')
+</script>
+</body>
+</html>

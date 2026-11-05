@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+*.log
+
+# Local-only working artefacts: raw screenshots that contain real task text
+# (the public README only uses the redacted copies under docs/screenshots/),
+# internal verification reports, and scratch directories.
+docs/*.png
+docs/VERIFICATION*.md
+CONTRACT*.md
+.dsh-recon*/
+*.bak-*

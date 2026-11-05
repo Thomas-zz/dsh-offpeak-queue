@@ -1,0 +1,5 @@
+# dsh-offpeak-queue bundle layer: one Host row (queue engine + HTTP API + agent tool).
+# The Client half is declared by package.json's `dsh.client` and served by DSH.
+- insert:
+    - id: offpeak-queue
+      name: 'dsh-offpeak-queue'
