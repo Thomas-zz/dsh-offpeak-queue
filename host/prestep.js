@@ -20,6 +20,7 @@
  */
 
 import { titleFromPrompt } from './store.js'
+import { classifySelection, familyLabel } from './families.js'
 
 /** Labels of the default creation template; a message made only of these is not a task. */
 export const TEMPLATE_LABELS = Object.freeze([
@@ -147,8 +148,9 @@ export function createPrestep(options) {
   }
 
   /**
-   * Rename the creation conversation so it is recognizable in the workspace
-   * list. Best effort: a title failure never fails the creation.
+   * Rename the creation conversation to the task's own title. Best effort: a
+   * title failure never fails the creation. No prefix is added — the sidebar
+   * already marks off-peak sessions with the moon icon.
    *
    * @param {object} session - live session.
    * @param {string} title - task title.
@@ -161,7 +163,7 @@ export function createPrestep(options) {
       const short = String(title).length > RENAME_TITLE_CHARS
         ? `${String(title).slice(0, RENAME_TITLE_CHARS - 1)}…`
         : String(title)
-      titles.rename(session, `闲时任务 · ${short}`)
+      titles.rename(session, short)
     } catch (error) {
       warn(`offpeak-queue: 设置创建会话标题失败：${error instanceof Error ? error.message : String(error)}`)
     }
@@ -181,6 +183,24 @@ export function createPrestep(options) {
     if (sessionId === null) return next()
     const armed = store.getArmed(sessionId)
     if (armed === null) return next()
+
+    // The conversation's resolved model route decides the billing family. When
+    // that family's off-peak tasks are switched off, this plugin must not
+    // intercept: the message runs as a normal model turn, the arm stays so a
+    // later message (after switching model or toggling the family back on) can
+    // still queue, and the dock surfaces why nothing was claimed.
+    const family = classifySelection(payload?.modelSelection?.provider, payload?.modelSelection?.model)
+    if (store.getSettings().familyEnabled[family] === false) {
+      try {
+        store.setArmError(
+          sessionId,
+          `当前对话使用的模型（${familyLabel(family)}）未开启闲时任务，这条消息将按普通对话发送`,
+        )
+      } catch {
+        /* best effort */
+      }
+      return next()
+    }
 
     let text
     let invalid
@@ -247,6 +267,7 @@ export function createPrestep(options) {
         title: titleFromPrompt(text),
         cwd: typeof session.header?.cwd === 'string' ? session.header.cwd : '',
         content: extractTaskContent(payload.messages),
+        modelFamily: family,
       })
     } catch (error) {
       warn(`offpeak-queue: 创建闲时任务失败：${error instanceof Error ? error.message : String(error)}`)

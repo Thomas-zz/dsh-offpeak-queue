@@ -254,7 +254,7 @@ test('a valid description creates the task, disarms, renames, and rejects withou
   assert.equal(task.cwd, '/abs/work')
   assert.equal(task.title, '整理书稿目录，输出 5 条要点')
   assert.equal(store.getLifetime().zeroCallCreations, 1)
-  assert.deepEqual(titleCalls, [['session-valid', '闲时任务 · 整理书稿目录，输出 5 条要点']], 'trailing punctuation is trimmed for the title')
+  assert.deepEqual(titleCalls, [['session-valid', '整理书稿目录，输出 5 条要点']], 'trailing punctuation is trimmed for the title')
   assert.equal(guidance.registered.length, 1)
   await new Promise((resolve) => setTimeout(resolve, 5))
   assert.equal(engine.ticks >= 1, true, 'creation kicks the scheduler on the next macrotask')
@@ -292,10 +292,9 @@ test('the renamed conversation title is truncated to keep the sidebar readable',
   await prestep.handle({ agent, messages: [claimedMessage(longText)] }, () => Promise.resolve({ kind: 'enter', messages: [] }))
   assert.equal(titleCalls.length, 1)
   const renamed = titleCalls[0][1]
-  assert.ok(renamed.startsWith('闲时任务 · '))
-  const shortPart = renamed.slice('闲时任务 · '.length)
-  assert.ok(shortPart.length <= 40, `rename title part is ≤40 chars (got ${shortPart.length})`)
-  assert.ok(shortPart.endsWith('…'))
+  assert.ok(!renamed.includes('闲时任务'), `the title carries no plugin prefix (got ${renamed})`)
+  assert.ok(renamed.length <= 40, `rename title is ≤40 chars (got ${renamed.length})`)
+  assert.ok(renamed.endsWith('…'))
   const task = store.listTasks()[0]
   assert.ok(task.title.length > 40, 'the persisted task title keeps up to 120 chars')
 })
@@ -358,4 +357,101 @@ test('a reapplied pre-step after disarm is a normal turn', async () => {
   assert.equal(nextCalls, 1)
   assert.equal(appended.length, before, 'no second append for an unarmed session')
   assert.equal(store.counts().total, 1)
+})
+
+// ────────────────────────────────────────────────────────────────────────────
+// Model-family classification and the per-family enable switch
+// ────────────────────────────────────────────────────────────────────────────
+
+test('a GLM model selection stores a GLM-family task', async () => {
+  const { prestep, store } = fixture()
+  const { agent } = fakeAgent('session-glm')
+  arm(store, 'session-glm')
+  const decision = await prestep.handle(
+    {
+      agent,
+      messages: [claimedMessage('整理 GLM 的文档')],
+      modelSelection: { provider: 'zai-coding-cn', model: 'glm-5.3', reasoningEffort: 'max' },
+    },
+    () => Promise.resolve({ kind: 'enter', messages: [] }),
+  )
+  assert.deepEqual(decision, { kind: 'reject' })
+  const task = store.listTasks()[0]
+  assert.equal(task.modelFamily, 'glm')
+})
+
+test('a missing model selection defaults to the DeepSeek family', async () => {
+  const { prestep, store } = fixture()
+  const { agent } = fakeAgent('session-plain')
+  arm(store, 'session-plain')
+  await prestep.handle(
+    { agent, messages: [claimedMessage('整理目录')] },
+    () => Promise.resolve({ kind: 'enter', messages: [] }),
+  )
+  assert.equal(store.listTasks()[0].modelFamily, 'deepseek')
+})
+
+test('a disabled family is never intercepted: the message falls through and the arm survives with a hint', async () => {
+  const { prestep, store } = fixture()
+  store.setSettings({ familyEnabled: { glm: false } })
+  const { agent } = fakeAgent('session-glm-off')
+  arm(store, 'session-glm-off')
+  let nextCalls = 0
+  const decision = await prestep.handle(
+    {
+      agent,
+      messages: [claimedMessage('用 GLM 做点事')],
+      modelSelection: { provider: 'zai', model: 'glm-4.6' },
+    },
+    () => {
+      nextCalls += 1
+      return Promise.resolve({ kind: 'enter', messages: [] })
+    },
+  )
+  assert.deepEqual(decision, { kind: 'enter', messages: [] }, 'the message runs as a normal model turn')
+  assert.equal(nextCalls, 1)
+  assert.equal(store.counts().total, 0, 'no task is created for a disabled family')
+  const armed = store.getArmed('session-glm-off')
+  assert.ok(armed !== null, 'the arm survives so a later enabled-family message can still queue')
+  assert.match(armed.lastError, /GLM.*未开启闲时任务/)
+})
+
+test('a disabled family still intercepts the other family normally', async () => {
+  const { prestep, store } = fixture()
+  store.setSettings({ familyEnabled: { glm: false } })
+  const { agent } = fakeAgent('session-ds-on')
+  arm(store, 'session-ds-on')
+  const decision = await prestep.handle(
+    {
+      agent,
+      messages: [claimedMessage('整理目录')],
+      modelSelection: { provider: 'deepseek-account', model: 'deepseek-flash' },
+    },
+    () => Promise.resolve({ kind: 'enter', messages: [] }),
+  )
+  assert.deepEqual(decision, { kind: 'reject' })
+  assert.equal(store.listTasks()[0].modelFamily, 'deepseek')
+})
+
+test('update-mode arms keep the original family and honour the switch', async () => {
+  const { prestep, controller, store } = fixture()
+  const created = controller.createTaskFromCreation({
+    sessionId: 'session-edit',
+    text: '原始任务',
+    modelFamily: 'glm',
+  })
+  store.armSession('session-edit', 'ws-1', { mode: 'update', taskId: created.id })
+  const { agent } = fakeAgent('session-edit')
+  const decision = await prestep.handle(
+    {
+      agent,
+      messages: [claimedMessage('改后的任务')],
+      modelSelection: { provider: 'deepseek-account', model: 'deepseek-flash' },
+    },
+    () => Promise.resolve({ kind: 'enter', messages: [] }),
+  )
+  assert.deepEqual(decision, { kind: 'reject' })
+  const updated = store.getTask(created.id)
+  assert.equal(updated.prompt, '改后的任务')
+  assert.equal(updated.modelFamily, 'glm', 'editing never re-classifies the task family')
 })

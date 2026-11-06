@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Off-Peak Queue",
-    "description": "Type /闲时任务 in a conversation to queue a task without any model call; DSH runs it in the same conversation during DeepSeek off-peak (half-price) hours."
+    "description": "Type /闲时任务 in a conversation to queue a task with zero model calls; it runs automatically in the same conversation during each model's off-peak hours (DeepSeek half price, GLM Coding Plan half credits)."
   }
 }

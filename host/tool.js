@@ -11,6 +11,7 @@
  */
 
 import { formatRule } from './policy.js'
+import { familyLabel, validFamily } from './families.js'
 
 /** Tool name registered on `ctx.tools`. */
 export const TOOL_NAME = 'offpeak_queue'
@@ -113,12 +114,20 @@ function preview(task) {
  * @returns {string} markdown text.
  */
 function renderList(summary, callingSessionId) {
-  const { period, settings, counts, tasks, now } = summary
+  const { period, periods, families, settings, counts, tasks, now } = summary
   const lines = []
-  if (period.kind === 'offpeak') {
-    lines.push(`当前：闲时（半价）· ${REASON_LABEL[period.reason] ?? ''}，下一个高峰 ${formatInstant(period.nextChangeAt, settings.timeZone, now)}`)
-  } else {
-    lines.push(`当前：高峰（全价），下一个闲时 ${formatInstant(period.nextOffpeakAt, settings.timeZone, now)} 起`)
+  const visible = Array.isArray(families)
+    ? families.filter((family) => family.enabled === true)
+    : [{ id: 'deepseek', label: 'DeepSeek' }]
+  const periodOf = (familyId) => (periods && periods[familyId] !== undefined ? periods[familyId] : familyId === 'deepseek' ? period : undefined)
+  for (const family of visible) {
+    const familyPeriod = periodOf(family.id)
+    if (familyPeriod === undefined) continue
+    if (familyPeriod.kind === 'offpeak') {
+      lines.push(`${family.label} 当前：闲时（优惠价）· ${REASON_LABEL[familyPeriod.reason] ?? ''}，下一个高峰 ${formatInstant(familyPeriod.nextChangeAt, settings.timeZone, now)}`)
+    } else {
+      lines.push(`${family.label} 当前：高峰（全价），下一个闲时 ${formatInstant(familyPeriod.nextOffpeakAt, settings.timeZone, now)} 起`)
+    }
   }
   lines.push(`共 ${counts.total} 个任务：等待 ${counts.queued} · 执行中 ${counts.running} · 已完成 ${counts.done} · 失败 ${counts.failed} · 已取消 ${counts.cancelled}`)
   if (tasks.length === 0) {
@@ -126,8 +135,8 @@ function renderList(summary, callingSessionId) {
     return lines.join('\n')
   }
   lines.push('')
-  lines.push('| 状态 | 标题 | 时间 | 任务 id |')
-  lines.push('| --- | --- | --- | --- |')
+  lines.push('| 状态 | 模型 | 标题 | 时间 | 任务 id |')
+  lines.push('| --- | --- | --- | --- | --- |')
   for (const task of tasks) {
     let when = ''
     if (task.status === 'queued') when = task.nextRunAt === null ? '待排期' : `${formatInstant(task.nextRunAt, settings.timeZone, now)} 预计开始`
@@ -135,7 +144,7 @@ function renderList(summary, callingSessionId) {
     else if (task.finishedAt !== null) when = `${formatInstant(task.finishedAt, settings.timeZone, now)} 结束`
     const mine = callingSessionId !== null && task.sourceSessionId === callingSessionId ? '（本会话）' : ''
     const title = `${String(task.title ?? '')}${mine}`.replace(/\|/g, '\\|')
-    lines.push(`| ${STATUS_LABEL[task.status] ?? task.status} | ${title}（${preview(task)}） | ${when} | \`${task.id}\` |`)
+    lines.push(`| ${STATUS_LABEL[task.status] ?? task.status} | ${familyLabel(validFamily(task.modelFamily))} | ${title}（${preview(task)}） | ${when} | \`${task.id}\` |`)
   }
   if (counts.total > tasks.length) lines.push('', `（仅显示最相关的 ${tasks.length} 个任务）`)
   lines.push('', `计费规则：${formatRule(settings)}`)
@@ -161,15 +170,23 @@ async function runAction(args, controller, agent, guidance) {
   }
   switch (action) {
     case 'add': {
+      // The billing family follows the calling conversation's resolved model
+      // route, so the queue schedules the task on that family's calendar.
+      const currentSelection = typeof agent?.model?.current === 'function' ? agent.model.current() : undefined
       const result = controller.addTaskFromTool(sessionId, {
         title: args.title,
         prompt: args.prompt,
         cwd: args.cwd,
+        modelSelection: {
+          provider: typeof currentSelection?.provider === 'string' ? currentSelection.provider : undefined,
+          model: typeof currentSelection?.model === 'string' ? currentSelection.model : undefined,
+        },
       })
       const task = result.task
       if (agent !== undefined) guidance.register(agent, task)
       const summary = controller.listSummary(500)
       const current = summary.tasks.find((entry) => entry.id === task.id)
+      const family = familyLabel(validFamily(task.modelFamily))
       const lines = []
       if (current === undefined) {
         lines.push('已加入闲时队列。')
@@ -180,15 +197,16 @@ async function runAction(args, controller, agent, guidance) {
         const position = queued.findIndex((entry) => entry.id === task.id) + 1
         if (position >= 1) {
           const when = formatInstant(queued[position - 1].nextRunAt, summary.settings.timeZone, summary.now)
-          lines.push(`已加入闲时队列（第 ${position} 个），预计 ${when} 闲时开始后自动执行。`)
+          lines.push(`已加入闲时队列（${family}，第 ${position} 个），预计 ${when} 闲时开始后自动执行。`)
         } else {
-          lines.push('已加入闲时队列。')
+          lines.push(`已加入闲时队列（${family}）。`)
         }
       } else {
         lines.push(`已加入闲时队列，任务已结束（${STATUS_LABEL[current.status] ?? current.status}）。`)
       }
       lines.push(
         `标题：${task.title}`,
+        `模型：${family}`,
         `任务 id：\`${task.id}\`（可用 list 查看，或用 cancel 取消）`,
         `计费规则：${formatRule(summary.settings)}`,
       )
@@ -257,10 +275,10 @@ export function createTool(dependencies) {
   return {
     name: TOOL_NAME,
     description: [
-      '闲时任务队列：管理 DeepSeek 闲时（半价）时段自动执行的任务；任务在它自己的来源对话里执行，不新开会话。',
+      '闲时任务队列：管理 DeepSeek 与 GLM 闲时（优惠价）时段自动执行的任务；任务在它自己的来源对话里执行，不新开会话。任务按创建时对话所用模型的高峰日历排队（DeepSeek：工作日 09:00–12:00、14:00–18:00 高峰；GLM：工作日 14:00–18:00 高峰，均为北京时间）。',
       '创建：用户在「闲时任务」面板点「新建闲时任务」后，在那个对话里写好任务描述并回车即可，宿主会自动拦截入队（不需要调用本工具）。',
       '当用户说「执行这个任务」时，用 run_current 执行本会话绑定的等待中任务；用户要列队列/取消/重试/立即执行/删除时用对应 action。',
-      'add 只用于用户明确要求把当前对话里的某件事加入闲时队列且尚未入队的情况，需要完整 prompt。',
+      'add 只用于用户明确要求把当前对话里的某件事加入闲时队列且尚未入队的情况，需要完整 prompt；任务会按当前对话的模型排期。',
       '不要自行开始执行任务内容；run_current 只在用户明确要求执行时调用。',
     ].join('\n'),
     parameters: {

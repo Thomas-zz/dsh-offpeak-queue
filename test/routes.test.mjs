@@ -224,6 +224,17 @@ test('POST /settings forwards the partial settings object', async () => {
   assert.deepEqual(calls, [['updateSettings', { autoRun: false }]])
 })
 
+test('POST /settings forwards per-family switches verbatim', async () => {
+  const { handler, calls } = fixture()
+  const res = await request(handler, makeReq({
+    method: 'POST',
+    url: '/dsh-offpeak/settings',
+    body: JSON.stringify({ familyEnabled: { glm: false } }),
+  }))
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(calls, [['updateSettings', { familyEnabled: { glm: false } }]])
+})
+
 test('POST /tick runs one scheduler pass and returns a fresh snapshot', async () => {
   const { handler, calls, engineCalls } = fixture()
   const res = await request(handler, makeReq({ method: 'POST', url: '/dsh-offpeak/tick' }))

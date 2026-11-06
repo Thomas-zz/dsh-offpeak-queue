@@ -10,6 +10,8 @@
  * @module dsh-offpeak-queue/host/pricing
  */
 
+import { classifySelection } from './families.js'
+
 /** Built-in price table: CNY per million tokens at peak (full price). */
 export const DEFAULT_PRICES = Object.freeze({
   'deepseek-flash': Object.freeze({ cacheHit: 0.04, cacheMiss: 2, output: 8 }),
@@ -22,6 +24,26 @@ export const DEFAULT_PRICES_VERIFIED_AT = '2026-10-10'
 
 /** Providers whose chat models are priced by this table. */
 export const PRICED_PROVIDERS = Object.freeze(['deepseek-account', 'deepseek-official', 'deepseek'])
+
+/**
+ * GLM Coding Plan credit coefficients, longest-prefix first.
+ *
+ * Official formula (verified 2026-11-06,
+ * https://docs.bigmodel.cn/cn/coding-plan/overview):
+ * `credits = (input×inputCoef + cachedInput×cachedCoef + output×outputCoef)/10000`,
+ * halved during off-peak. Historical models are server-side rerouted to
+ * GLM-5.3 / GLM-5.3-Flash, so only those two coefficient rows exist.
+ */
+export const GLM_POINTS_TABLE = Object.freeze([
+  Object.freeze({ prefix: 'glm-5.3-flash', input: 2.3, cached: 0.56, output: 8 }),
+  Object.freeze({ prefix: 'glm-5.3', input: 6.9, cached: 1.7, output: 24 }),
+])
+
+/** Date the built-in GLM credit coefficients were last verified. */
+export const GLM_POINTS_VERIFIED_AT = '2026-11-06'
+
+/** Credits divider from the official formula (coefficients are per 10k tokens). */
+const GLM_POINTS_DIVISOR = 10_000
 
 /** A price table validation failure with a user-facing Chinese message. */
 export class PricingError extends Error {
@@ -157,13 +179,60 @@ export function stepCost(input) {
 }
 
 /**
+ * Resolve the GLM credit coefficients for one model id (longest prefix wins).
+ *
+ * @param {unknown} model - provider-owned model id.
+ * @returns {{prefix: string, input: number, cached: number, output: number}|null} row, or null when unknown.
+ */
+export function glmPointsRowFor(model) {
+  if (typeof model !== 'string') return null
+  const lowered = model.toLowerCase()
+  let best = null
+  for (const row of GLM_POINTS_TABLE) {
+    if (lowered.startsWith(row.prefix) && (best === null || row.prefix.length > best.prefix.length)) best = row
+  }
+  return best
+}
+
+/**
+ * Estimate GLM Coding Plan credits for one step from measured tokens.
+ *
+ * `points` is the credited consumption at the step's tier (half during
+ * off-peak); `pointsSaved` is the off-peak discount. Non-GLM families and GLM
+ * models without a coefficient row return nulls (tokens are still recorded).
+ * MCP-tool credits are out of scope; this is an estimate, not a bill.
+ *
+ * @param {{tier: 'peak'|'offpeak', usage: object, provider: unknown, model: unknown}} input - step input.
+ * @returns {{priced: boolean, points: number|null, pointsSaved: number|null}} step credit estimate.
+ */
+export function stepPoints(input) {
+  if (classifySelection(input.provider, input.model) !== 'glm') {
+    return { priced: false, points: null, pointsSaved: null }
+  }
+  const row = glmPointsRowFor(input.model)
+  if (row === null) return { priced: false, points: null, pointsSaved: null }
+  const usage = normalizeUsage(input.usage)
+  const inMiss = usage.inputTokens + usage.cacheWriteTokens
+  const base = (inMiss * row.input + usage.cacheReadTokens * row.cached + usage.outputTokens * row.output) / GLM_POINTS_DIVISOR
+  const points = input.tier === 'peak' ? base : base * 0.5
+  return {
+    priced: true,
+    points,
+    pointsSaved: input.tier === 'peak' ? 0 : base * 0.5,
+  }
+}
+
+/**
  * Sum step records into run totals.
  *
  * A run without steps costs 0 and is priced (no tokens were spent); a run whose
- * steps are all unpriced keeps `null` costs with `unpriced: true`.
+ * steps are all unpriced keeps `null` costs with `unpriced: true`. GLM steps
+ * carry parallel credit estimates: `points`/`pointsSaved` stay `null` while no
+ * step of the run had a known coefficient table (mixed runs sum what they know
+ * and flag `pointsPartial`).
  *
- * @param {object[]} steps - priced step records (`cost`, `peakCost`, `saved`, `peakExtra`, `usage`).
- * @returns {{cost: number|null, peakCost: number|null, saved: number|null, peakExtra: number|null, usage: {inputTokens: number, outputTokens: number, cacheReadTokens: number, reasoningTokens: number, cacheWriteTokens: number}, unpriced: boolean}} totals.
+ * @param {object[]} steps - priced step records (`cost`, `peakCost`, `saved`, `peakExtra`, `usage`, `points`, `pointsSaved`).
+ * @returns {{cost: number|null, peakCost: number|null, saved: number|null, peakExtra: number|null, usage: {inputTokens: number, outputTokens: number, cacheReadTokens: number, reasoningTokens: number, cacheWriteTokens: number}, unpriced: boolean, points: number|null, pointsSaved: number|null, pointsPartial: boolean}} totals.
  */
 export function sumRunCost(steps) {
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }
@@ -173,6 +242,9 @@ export function sumRunCost(steps) {
   let peakCost = 0
   let saved = 0
   let peakExtra = 0
+  let pointSteps = 0
+  let points = 0
+  let pointsSaved = 0
   for (const step of steps) {
     const stepUsage = step.usage ?? {}
     usage.inputTokens += typeof stepUsage.inputTokens === 'number' ? stepUsage.inputTokens : 0
@@ -189,9 +261,34 @@ export function sumRunCost(steps) {
     } else {
       unpriced = true
     }
+    if (typeof step.points === 'number') {
+      pointSteps += 1
+      points += step.points
+      pointsSaved += typeof step.pointsSaved === 'number' ? step.pointsSaved : 0
+    }
   }
   if (steps.length > 0 && pricedSteps === 0) {
-    return { cost: null, peakCost: null, saved: null, peakExtra: null, usage, unpriced: true }
+    return {
+      cost: null,
+      peakCost: null,
+      saved: null,
+      peakExtra: null,
+      usage,
+      unpriced: true,
+      points: steps.length > 0 && pointSteps > 0 ? points : null,
+      pointsSaved: pointSteps > 0 ? pointsSaved : null,
+      pointsPartial: pointSteps > 0 && pointSteps < steps.length,
+    }
   }
-  return { cost, peakCost, saved, peakExtra, usage, unpriced }
+  return {
+    cost,
+    peakCost,
+    saved,
+    peakExtra,
+    usage,
+    unpriced,
+    points: pointSteps > 0 ? points : null,
+    pointsSaved: pointSteps > 0 ? pointsSaved : null,
+    pointsPartial: pointSteps > 0 && pointSteps < steps.length,
+  }
 }

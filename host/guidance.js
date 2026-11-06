@@ -45,8 +45,9 @@ export function createGuidance(options = {}) {
    * @returns {string} system-prompt section text.
    */
   function guidanceText(task) {
+    const family = familyLabel(task.modelFamily)
     return [
-      `本会话关联一个待执行的闲时任务「${task.title}」（任务 id ${task.id}，状态：等待闲时执行）。任务内容会随执行指令一起给出。`,
+      `本会话关联一个待执行的闲时任务「${task.title}」（${family} 模型，任务 id ${task.id}，状态：等待闲时执行）。任务内容会随执行指令一起给出。`,
       '只有当用户明确要求“执行这个任务”时，才调用 offpeak_queue 的 run_current；不要自行开始执行该任务内容。',
       '任务到闲时（或用户点击立即执行）会由宿主自动执行，执行时会在本会话里收到一条开始指令。',
     ].join('')
@@ -123,8 +124,9 @@ export function createGuidance(options = {}) {
  * @returns {string} system-prompt section text.
  */
 export function taskGuidanceText(task) {
+  const family = familyLabel(task.modelFamily)
   return [
-    `本会话关联一个待执行的闲时任务「${task.title}」（任务 id ${task.id}，状态：等待闲时执行）。任务内容会随执行指令一起给出。`,
+    `本会话关联一个待执行的闲时任务「${task.title}」（${family} 模型，任务 id ${task.id}，状态：等待闲时执行）。任务内容会随执行指令一起给出。`,
     '只有当用户明确要求“执行这个任务”时，才调用 offpeak_queue 的 run_current；不要自行开始执行该任务内容。',
     '任务到闲时（或用户点击立即执行）会由宿主自动执行，执行时会在本会话里收到一条开始指令。',
   ].join('')

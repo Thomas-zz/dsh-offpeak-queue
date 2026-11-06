@@ -13,7 +13,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { resolvePeriod } from './policy.js'
-import { normalizeUsage, stepCost, sumRunCost } from './pricing.js'
+import { normalizeUsage, stepCost, stepPoints, sumRunCost } from './pricing.js'
+import { calendarSettingsFor, classifySelection } from './families.js'
 
 /** Source family of the execution wake message (chat renders a trigger card). */
 const EXECUTION_SOURCE = 'cordis-host-runner'
@@ -252,6 +253,8 @@ export function createRunner(options) {
         peakCost: totals.peakCost,
         saved: totals.saved,
         peakExtra: totals.peakExtra,
+        points: totals.points,
+        pointsSaved: totals.pointsSaved,
         unpriced: totals.unpriced,
         provider: lastProvider,
         model: lastModel,
@@ -288,10 +291,14 @@ export function createRunner(options) {
           if (text.trim() !== '') lastText = text
           if (event.data?.usage !== undefined && event.data.usage !== null) {
             const usage = normalizeUsage(event.data.usage)
-            const tier = resolvePeriod(event.time, settings).kind
             const provider = typeof event.data.message?.source?.provider === 'string' ? event.data.message.source.provider : null
             const model = typeof event.data.message?.source?.model === 'string' ? event.data.message.source.model : null
+            // The billing tier follows the family of the model that actually
+            // served this step (per its own calendar), not the task's family.
+            const stepFamily = classifySelection(provider, model)
+            const tier = resolvePeriod(event.time, calendarSettingsFor(stepFamily, settings)).kind
             const cost = stepCost({ tier, usage, provider, model, prices: settings.prices })
+            const points = stepPoints({ tier, usage, provider, model })
             steps.push({
               at: event.time,
               tier,
@@ -300,6 +307,8 @@ export function createRunner(options) {
               peakCost: cost.peakCost,
               saved: cost.saved,
               peakExtra: cost.peakExtra,
+              points: points.points,
+              pointsSaved: points.pointsSaved,
               provider,
               model,
             })

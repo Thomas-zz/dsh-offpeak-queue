@@ -99,6 +99,64 @@ window.__ModuleLoader__.load({
       peakWindows: DEFAULT_PEAK_WINDOWS,
       holidays: DEFAULT_HOLIDAYS,
       prices: DEFAULT_PRICES,
+      familyEnabled: { deepseek: true, glm: true },
+    }
+
+    /** Built-in model families in display order (labels are brand names). */
+    const FAMILY_ORDER = ['deepseek', 'glm']
+
+    /**
+     * Family label for one id, localized through the plugin namespace (labels
+     * are brand names, so both dictionaries carry the same text).
+     */
+    function familyLabelOf(familyId, t) {
+      const known = FAMILY_ORDER.includes(familyId) ? familyId : 'deepseek'
+      return t(`family.${known}`)
+    }
+
+    /**
+     * The family of one task with a DeepSeek fallback (older snapshots).
+     *
+     * @param {object} task - snapshot task.
+     * @returns {string} family id.
+     */
+    function familyOfTask(task) {
+      const value = pick(task, 'modelFamily')
+      return FAMILY_ORDER.includes(value) ? value : 'deepseek'
+    }
+
+    /**
+     * Enabled families with their billing period, in display order. Falls back
+     * to the legacy single DeepSeek period while an older Host snapshot loads.
+     *
+     * @param {object} data - snapshot payload.
+     * @param {Function} t - translate.
+     * @returns {{id: string, label: string, period: object}[]} chips to render.
+     */
+    function billingChipsOf(data, t) {
+      const periods = pick(data, 'periods')
+      const chips = []
+      for (const family of listOf(pick(data, 'families'))) {
+        if (pick(family, 'enabled') === false) continue
+        const id = typeof pick(family, 'id') === 'string' ? family.id : ''
+        if (!FAMILY_ORDER.includes(id)) continue
+        let period = periods && typeof periods === 'object' ? pick(periods, id) : null
+        if ((!period || typeof period !== 'object') && id === 'deepseek') period = pick(data, 'period')
+        if (!period || typeof period !== 'object') continue
+        chips.push({
+          id,
+          label: familyLabelOf(id, t),
+          zone: id === 'glm' ? 'Asia/Shanghai' : settingsOf(data).timeZone,
+          period,
+        })
+      }
+      if (chips.length === 0) {
+        const fallback = pick(data, 'period')
+        if (fallback && typeof fallback === 'object') {
+          chips.push({ id: 'deepseek', label: familyLabelOf('deepseek', t), zone: settingsOf(data).timeZone, period: fallback })
+        }
+      }
+      return chips
     }
 
     /** Task statuses grouped as finished in the UI. */
@@ -122,6 +180,9 @@ window.__ModuleLoader__.load({
       'period.offpeakOpen': '当前处于闲时时段',
       'period.peakOpen': '高峰结束后进入闲时',
       'period.loading': '时段信息读取中',
+
+      'family.deepseek': 'DeepSeek',
+      'family.glm': 'GLM',
 
       'load.loading': '正在读取队列…',
       'load.errorTitle': '无法读取队列',
@@ -221,13 +282,14 @@ window.__ModuleLoader__.load({
       'row.finishedAt': '完成于 {time}',
       'row.cancelledAt': '取消于 {time}',
       'row.saved': '约省 {amount}',
+      'row.pointsSaved': '闲时省 {points} 积分',
       'row.unpriced': '未计价',
       'row.peakNoSave': '峰时执行 · 未节省',
       'row.errorLabel': '错误',
       'row.pending': '处理中…',
 
       'statistics.title': '统计',
-      'statistics.subtitle': '近 14 天 · 按实测 token 与官方价目表估算',
+      'statistics.subtitle': '近 14 天 · 按实测 token 与各模型官方口径估算',
       'statistics.refresh': '刷新统计',
       'statistics.loading': '正在读取统计…',
       'statistics.error': '统计读取失败',
@@ -235,15 +297,23 @@ window.__ModuleLoader__.load({
       'statistics.lifetimeSaved': '累计节省',
       'statistics.monthSaved': '本月节省',
       'statistics.runs': '累计运行',
+      'statistics.familyRuns': '{family} 运行',
+      'statistics.glmPoints': 'GLM 估算积分',
+      'statistics.glmPointsSaved': 'GLM 闲时省积分',
+      'statistics.pointsUnit': '积分',
       'statistics.chartTitle': '近 14 天',
       'statistics.legendSaved': '节省',
+      'statistics.legendRuns': '运行次数',
       'statistics.chartEmpty': '近 14 天还没有执行记录',
       'statistics.byModel': '按模型',
       'statistics.tableModel': '模型',
       'statistics.tableRuns': '运行',
       'statistics.tableSaved': '节省',
+      'statistics.tablePoints': '积分（估）',
+      'statistics.tableTokens': 'Token',
       'statistics.tablePriced': '计价',
       'statistics.unpricedTag': '未计价',
+      'statistics.pointsTag': '积分估算',
       'statistics.recent': '最近执行',
       'statistics.colTask': '任务',
       'statistics.colStatus': '状态',
@@ -253,7 +323,7 @@ window.__ModuleLoader__.load({
       'statistics.recentEmpty': '还没有执行记录',
       'statistics.trigger.offpeak': '自动',
       'statistics.trigger.manual': '手动',
-      'statistics.disclaimer': '按官方价目表与实测 token 估算，非账单金额。',
+      'statistics.disclaimer': 'DeepSeek 按官方价目表、GLM 按官方积分系数与实测 token 估算，均非账单金额。',
       'statistics.pricesVerified': '价格核对于 {date}',
       'statistics.unknownModel': '未知模型',
 
@@ -261,12 +331,20 @@ window.__ModuleLoader__.load({
       'settings.subtitle': '修改后点击保存，约 15 秒内生效。',
       'settings.maxConcurrent': '最大并发',
       'settings.maxConcurrentHint': '同时执行的任务数，1–5。',
+      'settings.models': '模型闲时任务',
+      'settings.modelsHint': '高峰时段按各模型官方规则自动配置；关闭后不再拦截该模型的入队消息，也不展示其高峰状态。',
+      'settings.family.deepseek': 'DeepSeek 闲时任务',
+      'settings.family.deepseekHint': '高峰：工作日 09:00–12:00、14:00–18:00（法定节假日除外）· 自动配置',
+      'settings.family.glm': 'GLM 闲时任务',
+      'settings.family.glmHint': '高峰：工作日 14:00–18:00（GLM Coding Plan 官方规则）· 自动配置',
       'settings.save': '保存',
       'settings.saving': '保存中…',
       'settings.reset': '恢复默认',
       'settings.resetHint': '已填入默认值，点击「保存」后生效。',
       'settings.saved': '设置已保存',
       'settings.numberInvalid': '请输入 {min}–{max} 的整数',
+      'settings.decrease': '减少',
+      'settings.increase': '增加',
 
       'mark.active': '有 {n} 个闲时任务',
       'mark.unseen': '有闲时任务已完成',
@@ -300,6 +378,9 @@ window.__ModuleLoader__.load({
       'period.offpeakOpen': 'Off-peak right now',
       'period.peakOpen': 'Off-peak begins after the peak window',
       'period.loading': 'Reading billing period',
+
+      'family.deepseek': 'DeepSeek',
+      'family.glm': 'GLM',
 
       'load.loading': 'Loading the queue…',
       'load.errorTitle': 'Could not load the queue',
@@ -399,13 +480,14 @@ window.__ModuleLoader__.load({
       'row.finishedAt': 'Finished {time}',
       'row.cancelledAt': 'Cancelled {time}',
       'row.saved': 'Saved ~{amount}',
+      'row.pointsSaved': '{points} credits saved off-peak',
       'row.unpriced': 'Not priced',
       'row.peakNoSave': 'Ran at peak · no savings',
       'row.errorLabel': 'Error',
       'row.pending': 'Working…',
 
       'statistics.title': 'Statistics',
-      'statistics.subtitle': 'Last 14 days · estimated from measured tokens and the official price list',
+      'statistics.subtitle': 'Last 14 days · estimated from measured tokens and official price/credit rules',
       'statistics.refresh': 'Refresh statistics',
       'statistics.loading': 'Loading statistics…',
       'statistics.error': 'Could not load the statistics',
@@ -413,15 +495,23 @@ window.__ModuleLoader__.load({
       'statistics.lifetimeSaved': 'Total saved',
       'statistics.monthSaved': 'Saved this month',
       'statistics.runs': 'Total runs',
+      'statistics.familyRuns': '{family} runs',
+      'statistics.glmPoints': 'GLM credits (est.)',
+      'statistics.glmPointsSaved': 'GLM credits saved',
+      'statistics.pointsUnit': 'credits',
       'statistics.chartTitle': 'Last 14 days',
       'statistics.legendSaved': 'Saved',
+      'statistics.legendRuns': 'Runs',
       'statistics.chartEmpty': 'No runs in the last 14 days',
       'statistics.byModel': 'By model',
       'statistics.tableModel': 'Model',
       'statistics.tableRuns': 'Runs',
       'statistics.tableSaved': 'Saved',
+      'statistics.tablePoints': 'Credits (est.)',
+      'statistics.tableTokens': 'Tokens',
       'statistics.tablePriced': 'Priced',
       'statistics.unpricedTag': 'Not priced',
+      'statistics.pointsTag': 'credits est.',
       'statistics.recent': 'Recent runs',
       'statistics.colTask': 'Task',
       'statistics.colStatus': 'Status',
@@ -431,7 +521,7 @@ window.__ModuleLoader__.load({
       'statistics.recentEmpty': 'No runs yet',
       'statistics.trigger.offpeak': 'Auto',
       'statistics.trigger.manual': 'Manual',
-      'statistics.disclaimer': 'Estimated from the official price list and measured tokens; not a billed amount.',
+      'statistics.disclaimer': 'DeepSeek from the official price list, GLM from official credit coefficients × measured tokens; estimates, not bills.',
       'statistics.pricesVerified': 'Prices verified {date}',
       'statistics.unknownModel': 'Unknown model',
 
@@ -439,12 +529,20 @@ window.__ModuleLoader__.load({
       'settings.subtitle': 'Changes take effect within ~15 s of saving.',
       'settings.maxConcurrent': 'Max concurrency',
       'settings.maxConcurrentHint': 'Tasks running at once, 1–5.',
+      'settings.models': 'Model off-peak tasks',
+      'settings.modelsHint': 'Peak windows follow each model’s official rule automatically; a disabled model is never intercepted and shows no status chip.',
+      'settings.family.deepseek': 'DeepSeek off-peak tasks',
+      'settings.family.deepseekHint': 'Peak: weekdays 09:00–12:00 & 14:00–18:00 (excl. public holidays) · automatic',
+      'settings.family.glm': 'GLM off-peak tasks',
+      'settings.family.glmHint': 'Peak: weekdays 14:00–18:00 (GLM Coding Plan rule) · automatic',
       'settings.save': 'Save',
       'settings.saving': 'Saving…',
       'settings.reset': 'Restore defaults',
       'settings.resetHint': 'Defaults filled in — press Save to apply.',
       'settings.saved': 'Settings saved',
       'settings.numberInvalid': 'Enter an integer from {min} to {max}',
+      'settings.decrease': 'Decrease',
+      'settings.increase': 'Increase',
 
       'mark.active': '{n} off-peak tasks',
       'mark.unseen': 'A finished off-peak task is ready',
@@ -640,6 +738,27 @@ window.__ModuleLoader__.load({
       return `¥${value.toFixed(digits)}`
     }
 
+    /** Format an estimated GLM credit amount with sensible precision. */
+    function formatPoints(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+      if (value === 0) return '0'
+      const abs = Math.abs(value)
+      if (abs >= 10000) return `${Math.round(value / 100) / 10}w`
+      if (abs >= 100) return String(Math.round(value))
+      if (abs >= 10) return String(Math.round(value * 10) / 10)
+      return String(Math.round(value * 100) / 100)
+    }
+
+    /** Compact localized token count, e.g. 1.2万 / 12K. */
+    function formatTokens(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '—'
+      try {
+        return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+      } catch {
+        return String(Math.round(value))
+      }
+    }
+
     /** Read a numeric member that may arrive as a plain number or inside a cost object. */
     function costNumber(value, keys) {
       if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -764,6 +883,17 @@ window.__ModuleLoader__.load({
 
     /** Savings phrase for a finished task, or null when the task is not priced yet. */
     function savingsOfTask(task, t) {
+      if (familyOfTask(task) === 'glm') {
+        // GLM runs carry estimated Coding-Plan credits instead of CNY.
+        const pointsSaved = costNumber(pick(task, 'pointsSaved'), ['pointsSaved'])
+        const points = costNumber(pick(task, 'points'), ['points'])
+        if (typeof pointsSaved === 'number' && pointsSaved > 0) {
+          return { text: t('row.pointsSaved', { points: formatPoints(pointsSaved) }), kind: 'saved' }
+        }
+        if (typeof points === 'number' && points > 0) return { text: t('row.peakNoSave'), kind: 'cost' }
+        if (typeof points !== 'number') return { text: t('row.unpriced'), kind: 'unpriced' }
+        return null
+      }
       if (taskUnpriced(task)) return { text: t('row.unpriced'), kind: 'unpriced' }
       const saved = savedOfTask(task)
       if (typeof saved === 'number' && saved > 0) {
@@ -1141,6 +1271,38 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * Minimal boolean store shared between React trees: the management page
+     * toggles it, the shell-overlay settings modal reads it.
+     *
+     * @param {boolean} initial - initial flag value.
+     * @returns {{subscribe: Function, getSnapshot: Function, set: Function, dispose: Function}} flag store.
+     */
+    function createFlagStore(initial) {
+      let value = initial === true
+      const listeners = new Set()
+      const publish = () => {
+        for (const listener of Array.from(listeners)) listener()
+      }
+      return {
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        getSnapshot: () => value,
+        set(next) {
+          const nextValue = next === true
+          if (nextValue === value) return
+          value = nextValue
+          publish()
+        },
+        dispose() {
+          listeners.clear()
+          value = false
+        },
+      }
+    }
+
     /** Read any of the module stores through React's external store hook. */
     function useStore(store) {
       return React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
@@ -1187,6 +1349,10 @@ window.__ModuleLoader__.load({
         holidayYears: listOf(raw.holidayYears).filter((year) => Number.isInteger(year)),
         prices: pricesOf(raw.prices) || DEFAULT_PRICES,
         pricesVerifiedAt: typeof raw.pricesVerifiedAt === 'string' ? raw.pricesVerifiedAt : '',
+        familyEnabled: {
+          deepseek: pick(raw.familyEnabled, 'deepseek') !== false,
+          glm: pick(raw.familyEnabled, 'glm') !== false,
+        },
       }
     }
 
@@ -1194,6 +1360,10 @@ window.__ModuleLoader__.load({
     function settingsToForm(settings) {
       return {
         maxConcurrent: String(numberOr(settings.maxConcurrent, DEFAULT_SETTINGS.maxConcurrent)),
+        familyEnabled: {
+          deepseek: settings.familyEnabled?.deepseek !== false,
+          glm: settings.familyEnabled?.glm !== false,
+        },
       }
     }
 
@@ -1215,6 +1385,10 @@ window.__ModuleLoader__.load({
         errors,
         body: {
           maxConcurrent,
+          familyEnabled: {
+            deepseek: form.familyEnabled?.deepseek === true,
+            glm: form.familyEnabled?.glm === true,
+          },
         },
       }
     }
@@ -1228,20 +1402,24 @@ window.__ModuleLoader__.load({
       .dsh-oq-scroll{flex:1 1 auto;min-height:0;overflow:auto;scrollbar-gutter:stable}
       .dsh-oq-content{max-width:1000px;margin:0 auto;padding:calc(20px + var(--dsh-frame-top-clearance, 0px)) clamp(18px, 4vw, 40px) 44px}
 
-      .dsh-oq-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:14px 24px}
+      .dsh-oq-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 24px}
       .dsh-oq-headMain{flex:1 1 320px;min-width:0}
       .dsh-oq-h1{margin:0;font-size:20px;font-weight:500;line-height:28px;letter-spacing:.01em}
-      .dsh-oq-headSide{display:flex;flex:0 1 auto;flex-direction:column;align-items:flex-end;gap:10px;min-width:0}
       .dsh-oq-headButtons{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px}
 
-      .dsh-oq-chip{min-width:236px;max-width:100%;box-sizing:border-box;border:0.5px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);padding:9px 14px 10px}
+      .dsh-oq-statusStrip{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:8px;margin-top:14px}
+      .dsh-oq-chip{min-width:0;max-width:100%;box-sizing:border-box;border:0.5px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1);padding:10px 14px 11px}
       .dsh-oq-chipMain{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;line-height:20px;white-space:nowrap}
       .dsh-oq-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary);box-shadow:0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-success-primary) 18%, transparent)}
       .dsh-oq-dot--peak{background:var(--dsw-alias-state-warn-primary);box-shadow:0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-warn-primary) 18%, transparent)}
       .dsh-oq-dot--idle{background:var(--dsw-alias-state-idle-primary);box-shadow:0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-idle-primary) 18%, transparent)}
+      .dsh-oq-chipFamily{flex:none;font-size:13px;font-weight:600;letter-spacing:.01em}
+      .dsh-oq-chipPeriod{display:inline-flex;align-items:center;flex:none;padding:1px 8px;border-radius:999px;background:color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500;line-height:16px;white-space:nowrap}
+      .dsh-oq-chipPeriod[data-tone="peak"]{background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent);color:var(--dsw-alias-state-warn-primary)}
+      .dsh-oq-chipPeriod[data-tone="offpeak"]{background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 13%, transparent);color:var(--dsw-alias-state-success-primary)}
       .dsh-oq-chipCountdown{margin-left:auto;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums;white-space:nowrap}
-      .dsh-oq-chipSub{margin-top:2px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
-      .dsh-oq-chipSub[data-tone="warn"]{color:var(--dsw-alias-label-secondary)}
+      .dsh-oq-chipSub{margin-top:3px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
+      .dsh-oq-familyTag{display:inline-flex;align-items:center;flex:none;padding:1px 6px;border-radius:5px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500;line-height:16px;white-space:nowrap}
 
 
       .dsh-oq-notice{display:flex;align-items:flex-start;gap:8px;margin-top:14px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:9px 13px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;overflow-wrap:anywhere}
@@ -1306,15 +1484,43 @@ window.__ModuleLoader__.load({
       .dsh-oq-errorLabel{flex:none;font-weight:500}
 
 
-      .dsh-oq-settings{padding:17px 20px 16px}
-      .dsh-oq-settingsHead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-      .dsh-oq-settingsTitle{margin:0;font-size:14px;font-weight:500;line-height:22px}
-      .dsh-oq-settingsSub{margin:2px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
-      .dsh-oq-settingsGrid{display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:12px 16px;margin-top:14px}
-      .dsh-oq-numberRow{display:flex;align-items:center;gap:8px}
-      .dsh-oq-number{width:96px;font-variant-numeric:tabular-nums}
-      .dsh-oq-numberUnit{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
-      .dsh-oq-settingsActions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:16px;border-top:0.5px solid var(--dsw-alias-border-l1);padding-top:13px}
+      .dsh-oq-modalLayer{position:fixed;inset:0;z-index:55;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:clamp(14px,5vh,36px) 16px;background:rgba(0,0,0,.45);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);pointer-events:auto}
+      .dsh-oq-modal{display:flex;flex-direction:column;width:min(560px,100%);max-height:100%;box-sizing:border-box;border:0.5px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 24px 64px rgba(0,0,0,.35),0 4px 16px rgba(0,0,0,.22);overflow:hidden}
+      .dsh-oq-modal:focus{outline:none}
+      .dsh-oq-modalHead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;box-sizing:border-box;padding:16px 20px 13px;border-bottom:0.5px solid var(--dsw-alias-border-l1)}
+      .dsh-oq-modalHeadText{min-width:0}
+      .dsh-oq-modalTitle{margin:0;font-size:15px;font-weight:600;line-height:22px}
+      .dsh-oq-modalSub{margin:3px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+      .dsh-oq-modalBody{flex:1 1 auto;min-height:0;box-sizing:border-box;overflow:auto;padding:18px 20px;display:flex;flex-direction:column;gap:20px}
+      .dsh-oq-modalFoot{display:flex;align-items:center;gap:8px;box-sizing:border-box;padding:12px 20px 14px;border-top:0.5px solid var(--dsw-alias-border-l1)}
+      .dsh-oq-modalFootStatus{flex:1 1 auto;min-width:0}
+      .dsh-oq-settingsGroup{display:flex;flex-direction:column;gap:8px;min-width:0}
+
+      .dsh-oq-stepper{display:inline-flex;align-items:stretch;align-self:flex-start;height:32px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base);transition:border-color .12s ease, box-shadow .12s ease}
+      .dsh-oq-stepper:focus-within{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent)}
+      .dsh-oq-stepBtn{flex:none;width:30px;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:15px;line-height:1;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:background .12s ease,color .12s ease}
+      .dsh-oq-stepBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+      .dsh-oq-stepBtn:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}
+      .dsh-oq-stepBtn:disabled{cursor:not-allowed;opacity:.45}
+      .dsh-oq-stepBtn:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px;border-radius:6px}
+      .dsh-oq-stepValue{width:46px;border:0;border-left:0.5px solid var(--dsw-alias-border-l1);border-right:0.5px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;text-align:center;font-variant-numeric:tabular-nums;-moz-appearance:textfield;appearance:textfield}
+      .dsh-oq-stepValue::-webkit-outer-spin-button,.dsh-oq-stepValue::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+      .dsh-oq-stepValue:focus{outline:none}
+      .dsh-oq-stepValue:disabled{opacity:.6;cursor:not-allowed}
+
+      .dsh-oq-familySwitches{display:flex;flex-direction:column;gap:8px}
+      .dsh-oq-familySwitch{display:flex;align-items:center;gap:12px;box-sizing:border-box;border:0.5px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px 10px 14px;cursor:pointer;transition:border-color .12s ease,background .12s ease}
+      .dsh-oq-familySwitch:hover{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-interactive-bg-hover)}
+      .dsh-oq-switch{appearance:none;-webkit-appearance:none;flex:none;order:2;width:34px;height:20px;margin:0;border:0;border-radius:999px;background:color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent);position:relative;cursor:pointer;transition:background .15s ease}
+      .dsh-oq-switch::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-label-primary-foreground);box-shadow:0 1px 2px color-mix(in srgb, var(--dsw-alias-label-primary) 25%, transparent);transition:transform .15s ease}
+      .dsh-oq-switch:checked{background:var(--dsw-alias-brand-primary)}
+      .dsh-oq-switch:checked::after{transform:translateX(14px)}
+      .dsh-oq-switch:disabled{cursor:not-allowed;opacity:.5}
+      .dsh-oq-switch:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}
+      .dsh-oq-familySwitchText{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
+      .dsh-oq-familySwitchLabel{font-size:13px;font-weight:500;line-height:20px}
+      .dsh-oq-familySwitchHint{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:17px;overflow-wrap:anywhere}
+
       .dsh-oq-settingsStatus{margin-left:2px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
       .dsh-oq-settingsStatus[data-kind="success"]{color:var(--dsw-alias-state-success-primary)}
       .dsh-oq-settingsStatus[data-kind="error"]{color:var(--dsw-alias-state-error-primary)}
@@ -1333,24 +1539,26 @@ window.__ModuleLoader__.load({
       @keyframes dsh-oq-pulse{0%,100%{opacity:.45;transform:scale(.85)}50%{opacity:1;transform:scale(1)}}
 
       @media (max-width: 820px){
-        .dsh-oq-headSide{align-items:stretch;flex:1 1 100%;width:100%}
-        .dsh-oq-chip{min-width:0}
         .dsh-oq-headButtons{justify-content:flex-start}
+        .dsh-oq-statusStrip{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
       }
       @media (max-width: 700px){
-        .dsh-oq-settingsGrid{grid-template-columns:1fr}
         .dsh-oq-content{padding-left:16px;padding-right:16px}
       }
       @media (max-width: 560px){
         .dsh-oq-rowActions{width:100%;justify-content:flex-start;margin-left:0;padding-top:2px}
         .dsh-oq-row{padding:10px 12px 11px}
-        .dsh-oq-settings{padding:14px 14px 13px}
+        .dsh-oq-modalLayer{padding:10px}
+        .dsh-oq-modalHead{padding:14px 14px 12px}
+        .dsh-oq-modalBody{padding:14px}
+        .dsh-oq-modalFoot{padding:11px 14px 12px}
         .dsh-oq-chipMain{flex-wrap:wrap;white-space:normal}
         .dsh-oq-chipCountdown{margin-left:0}
       }
       @media (prefers-reduced-motion: reduce){
         .dsh-oq-badge[data-status="running"]::before,.dsh-oq-spinner{animation:none}
         .dsh-oq-btn,.dsh-oq-row{transition:none}
+        .dsh-oq-switch,.dsh-oq-switch::after{transition:none}
       }
     `
 
@@ -1390,10 +1598,12 @@ window.__ModuleLoader__.load({
       .dsh-oq-legendDot{flex:none;width:7px;height:7px;border-radius:2px}
       .dsh-oq-legendDot[data-kind="cost"]{background:var(--dsw-alias-state-business-primary)}
       .dsh-oq-legendDot[data-kind="saved"]{background:var(--dsw-alias-state-success-primary)}
+      .dsh-oq-legendDot[data-kind="runs"]{background:var(--dsw-alias-label-tertiary)}
       .dsh-oq-chart{display:block;width:100%;height:auto;margin-top:8px;overflow:visible}
       .dsh-oq-chartBar{transition:opacity .12s ease}
       .dsh-oq-chartBar[data-kind="cost"]{fill:var(--dsw-alias-state-business-primary);opacity:.85}
       .dsh-oq-chartBar[data-kind="saved"]{fill:var(--dsw-alias-state-success-primary);opacity:.85}
+      .dsh-oq-chartBar[data-kind="runs"]{fill:var(--dsw-alias-label-tertiary);opacity:.55}
       .dsh-oq-chartBar:hover{opacity:1}
       .dsh-oq-chartGrid{stroke:var(--dsw-alias-border-l1);stroke-width:1}
       .dsh-oq-chartLabel{fill:var(--dsw-alias-label-secondary);font-size:9px;font-family:inherit}
@@ -1657,11 +1867,9 @@ window.__ModuleLoader__.load({
       return h('span', { className: 'dsh-oq-chipCountdown' }, t('period.switchIn', { time: formatCountdown(remaining) }))
     }
 
-    /** Live billing chip: state dot, label, countdown, and next transition line. */
-    function BillingChip({ data, snapshot, t, onExpire }) {
-      const period = pick(data, 'period')
-      const settings = settingsOf(data)
-      const zone = settings.timeZone
+    /** Live billing chip for one model family: dot, label, countdown, subline. */
+    function BillingChip({ label, zone, period: chipPeriod, snapshot, t, onExpire }) {
+      const period = chipPeriod
       const now = nowOf(snapshot)
       const hasPeriod = !!period && typeof period === 'object'
       const isPeak = hasPeriod && period.kind === 'peak'
@@ -1688,6 +1896,7 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const tone = !hasPeriod ? 'idle' : isPeak ? 'peak' : 'offpeak'
       return h(
         'div',
         { className: 'dsh-oq-chip' },
@@ -1698,12 +1907,13 @@ window.__ModuleLoader__.load({
             className: !hasPeriod ? 'dsh-oq-dot dsh-oq-dot--idle' : isPeak ? 'dsh-oq-dot dsh-oq-dot--peak' : 'dsh-oq-dot',
             'aria-hidden': 'true',
           }),
-          h('span', null, !hasPeriod ? t('period.loading') : isPeak ? t('period.peak') : t('period.offpeak')),
+          h('span', { className: 'dsh-oq-chipFamily' }, label),
+          h('span', { className: 'dsh-oq-chipPeriod', 'data-tone': tone }, !hasPeriod ? t('period.loading') : isPeak ? t('period.peak') : t('period.offpeak')),
           hasPeriod && typeof period.nextChangeAt === 'number'
             ? h(Countdown, { target: period.nextChangeAt, offset: snapshot && snapshot.serverOffset, t, onExpire })
             : null,
         ),
-        h('div', { className: 'dsh-oq-chipSub', 'data-tone': isPeak ? 'warn' : 'ok' }, subline),
+        h('div', { className: 'dsh-oq-chipSub', 'data-tone': tone }, subline),
       )
     }
 
@@ -2215,6 +2425,7 @@ window.__ModuleLoader__.load({
           },
           h('span', { className: 'dsh-oq-taskBarGlyph', 'aria-hidden': 'true' }, h(OffpeakIcon, { size: 13 })),
           h('span', { className: 'dsh-oq-taskBarText' }, label),
+          h('span', { className: 'dsh-oq-familyTag' }, familyLabelOf(familyOfTask(task), t)),
           titleText ? h('span', { className: 'dsh-oq-taskBarTitle' }, titleText) : null,
           metaText !== '' ? h('span', { className: 'dsh-oq-taskBarMeta' }, metaText) : null,
           more > 0 ? h('span', { className: 'dsh-oq-taskBarMeta' }, t('taskBar.more', { n: more })) : null,
@@ -2577,6 +2788,7 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'dsh-oq-rowTop' },
           h('span', { className: 'dsh-oq-badge', 'data-status': statusSafe }, statusLabel(t, statusSafe)),
+          h('span', { className: 'dsh-oq-familyTag' }, familyLabelOf(familyOfTask(task), t)),
           sourceSessionId
             ? h(
                 'button',
@@ -2620,6 +2832,8 @@ window.__ModuleLoader__.load({
     function SavingsChart({ series, t }) {
       const days = series.length
       const max = seriesMax(series)
+      let maxRuns = 0
+      for (const day of series) maxRuns = Math.max(maxRuns, numberOr(pick(day, 'runs'), 0))
       const width = 560
       const height = 128
       const padLeft = 38
@@ -2638,8 +2852,30 @@ window.__ModuleLoader__.load({
       series.forEach((day, index) => {
         const groupX = padLeft + slot * index + slot / 2
         const savedHeight = scale(day.saved)
+        const runs = numberOr(pick(day, 'runs'), 0)
+        const runsHeight = maxRuns > 0 ? (runs / maxRuns) * plotHeight : 0
         const baseY = padTop + plotHeight
-        const tooltip = `${day.date} · ${t('statistics.legendSaved')} ${formatCny(day.saved)} · ${day.runs}`
+        const tooltip = `${day.date} · ${t('statistics.legendSaved')} ${formatCny(day.saved)} · ${t('statistics.legendRuns')} ${runs}`
+        if (runs > 0) {
+          // A subtle backdrop bar shows run activity even on days whose runs
+          // were unpriced in CNY (GLM-only days still light up).
+          bars.push(
+            h(
+              'rect',
+              {
+                key: `runs-${day.date}`,
+                className: 'dsh-oq-chartBar',
+                'data-kind': 'runs',
+                x: groupX - barWidth / 2 - barWidth * 0.75,
+                y: baseY - Math.max(1, runsHeight),
+                width: barWidth * 0.5,
+                height: Math.max(1, runsHeight),
+                rx: 1.5,
+              },
+              h('title', null, tooltip),
+            ),
+          )
+        }
         if (day.saved > 0) {
           bars.push(
             h(
@@ -2746,7 +2982,9 @@ window.__ModuleLoader__.load({
         return date.startsWith(currentMonth) ? total + numberOr(pick(entry, 'saved'), 0) : total
       }, 0)
       const lifetimeSaved = numberOr(pick(lifetime, 'saved'), 0)
-      const lifetimeRuns = numberOr(pick(lifetime, 'runs'), 0)
+      const familyRuns = pick(lifetime, 'familyRuns') || {}
+      const glmPoints = numberOr(pick(lifetime, 'glmPoints'), 0)
+      const glmPointsSaved = numberOr(pick(lifetime, 'glmPointsSaved'), 0)
       const byModel = listOf(pick(payload, 'byModel'))
       const recentRuns = listOf(pick(payload, 'recentRuns'))
       const pricesVerifiedAt = typeof pick(payload, 'pricesVerifiedAt') === 'string' ? payload.pricesVerifiedAt : ''
@@ -2754,8 +2992,15 @@ window.__ModuleLoader__.load({
       const cards = [
         { key: 'lifetimeSaved', value: formatCny(lifetimeSaved), label: t('statistics.lifetimeSaved'), tone: 'saved' },
         { key: 'monthSaved', value: formatCny(monthSaved), label: t('statistics.monthSaved'), tone: 'saved' },
-        { key: 'runs', value: String(lifetimeRuns), label: t('statistics.runs'), tone: undefined },
+        { key: 'runsDeepseek', value: String(numberOr(pick(familyRuns, 'deepseek'), 0)), label: t('statistics.familyRuns', { family: familyLabelOf('deepseek', t) }), tone: undefined },
+        { key: 'runsGlm', value: String(numberOr(pick(familyRuns, 'glm'), 0)), label: t('statistics.familyRuns', { family: familyLabelOf('glm', t) }), tone: undefined },
       ]
+      if (glmPoints > 0) {
+        cards.push({ key: 'glmPoints', value: formatPoints(glmPoints), label: t('statistics.glmPoints'), tone: undefined })
+      }
+      if (glmPointsSaved > 0) {
+        cards.push({ key: 'glmPointsSaved', value: formatPoints(glmPointsSaved), label: t('statistics.glmPointsSaved'), tone: 'saved' })
+      }
 
       const triggerText = (trigger) => (trigger === 'manual' ? t('statistics.trigger.manual') : t('statistics.trigger.offpeak'))
 
@@ -2831,9 +3076,15 @@ window.__ModuleLoader__.load({
                       h('span', { className: 'dsh-oq-legendDot', 'data-kind': 'saved', 'aria-hidden': 'true' }),
                       t('statistics.legendSaved'),
                     ),
+                    h(
+                      'span',
+                      { className: 'dsh-oq-legendItem' },
+                      h('span', { className: 'dsh-oq-legendDot', 'data-kind': 'runs', 'aria-hidden': 'true' }),
+                      t('statistics.legendRuns'),
+                    ),
                   ),
                 ),
-                seriesMax(series) <= 0
+                seriesMax(series) <= 0 && series.every((day) => numberOr(pick(day, 'runs'), 0) === 0)
                   ? h('p', { className: 'dsh-oq-chartEmpty' }, t('statistics.chartEmpty'))
                   : h(SavingsChart, { series, t }),
               ),
@@ -2858,6 +3109,8 @@ window.__ModuleLoader__.load({
                             h('th', null, t('statistics.tableModel')),
                             h('th', { className: 'dsh-oq-num' }, t('statistics.tableRuns')),
                             h('th', { className: 'dsh-oq-num' }, t('statistics.tableSaved')),
+                            h('th', { className: 'dsh-oq-num' }, t('statistics.tablePoints')),
+                            h('th', { className: 'dsh-oq-num' }, t('statistics.tableTokens')),
                             h('th', null, t('statistics.tablePriced')),
                           ),
                         ),
@@ -2871,23 +3124,32 @@ window.__ModuleLoader__.load({
                             const model = unknown ? t('statistics.unknownModel') : rawModel
                             const provider = unknown || rawProvider === 'unknown' ? '' : rawProvider
                             const unpriced = pick(entry, 'unpriced') === true
+                            const familyId = familyOfTask(entry)
+                            const points = pick(entry, 'points')
+                            const tokens = numberOr(pick(entry, 'tokensIn'), 0) + numberOr(pick(entry, 'tokensOut'), 0)
                             return h(
                               'tr',
                               { key: `model-${index}-${model}-${provider}` },
                               h(
                                 'td',
                                 null,
+                                h('span', { className: 'dsh-oq-familyTag' }, familyLabelOf(familyId, t)),
+                                ' ',
                                 model,
                                 provider ? h('span', { className: 'dsh-oq-recentMeta' }, ` · ${provider}`) : null,
                               ),
                               h('td', { className: 'dsh-oq-num' }, String(numberOr(pick(entry, 'runs'), 0))),
-                              h('td', { className: 'dsh-oq-num' }, unpriced ? '—' : formatCny(numberOr(pick(entry, 'saved'), 0))),
+                              h('td', { className: 'dsh-oq-num' }, unpriced && familyId !== 'glm' ? '—' : formatCny(numberOr(pick(entry, 'saved'), 0))),
+                              h('td', { className: 'dsh-oq-num' }, typeof points === 'number' ? formatPoints(points) : '—'),
+                              h('td', { className: 'dsh-oq-num' }, formatTokens(tokens)),
                               h(
                                 'td',
                                 null,
-                                unpriced
-                                  ? h('span', { className: 'dsh-oq-unpricedTag' }, t('statistics.unpricedTag'))
-                                  : h('span', { className: 'dsh-oq-pricedTag' }, t('statistics.tablePriced')),
+                                familyId === 'glm'
+                                  ? h('span', { className: 'dsh-oq-pricedTag' }, t('statistics.pointsTag'))
+                                  : unpriced
+                                    ? h('span', { className: 'dsh-oq-unpricedTag' }, t('statistics.unpricedTag'))
+                                    : h('span', { className: 'dsh-oq-pricedTag' }, t('statistics.tablePriced')),
                               ),
                             )
                           }),
@@ -2929,7 +3191,13 @@ window.__ModuleLoader__.load({
                           return h(
                             'li',
                             { className: 'dsh-oq-recentRow', key: `run-${index}-${pick(run, 'id') || finishedAt}` },
-                            h('span', { className: 'dsh-oq-recentTitle' }, title),
+                            h(
+                              'span',
+                              { className: 'dsh-oq-recentTitle' },
+                              h('span', { className: 'dsh-oq-familyTag' }, familyLabelOf(familyOfTask(run), t)),
+                              ' ',
+                              title,
+                            ),
                             h(
                               'span',
                               { className: 'dsh-oq-runStatus', 'data-status': status || undefined },
@@ -2937,11 +3205,21 @@ window.__ModuleLoader__.load({
                             ),
                             h('span', { className: 'dsh-oq-recentMeta dsh-oq-recentMeta--start' }, triggerText(pick(run, 'trigger'))),
                             h('span', { className: 'dsh-oq-recentMeta' }, timeText),
-                            unpriced
-                              ? h('span', { className: 'dsh-oq-recentSaved dsh-oq-recentSaved--empty' }, t('statistics.unpricedTag'))
-                              : saved > 0
-                                ? h('span', { className: 'dsh-oq-recentSaved' }, `+${formatCny(saved)}`)
-                                : h('span', { className: 'dsh-oq-recentSaved dsh-oq-recentSaved--empty' }, ''),
+                            familyOfTask(run) === 'glm'
+                              ? (() => {
+                                  const pointsSaved = numberOr(pick(run, 'pointsSaved'), 0)
+                                  const points = pick(run, 'points')
+                                  if (pointsSaved > 0) return h('span', { className: 'dsh-oq-recentSaved' }, `+${formatPoints(pointsSaved)}`)
+                                  if (typeof points !== 'number') {
+                                    return h('span', { className: 'dsh-oq-recentSaved dsh-oq-recentSaved--empty' }, t('statistics.unpricedTag'))
+                                  }
+                                  return h('span', { className: 'dsh-oq-recentSaved dsh-oq-recentSaved--empty' }, '')
+                                })()
+                              : unpriced
+                                ? h('span', { className: 'dsh-oq-recentSaved dsh-oq-recentSaved--empty' }, t('statistics.unpricedTag'))
+                                : saved > 0
+                                  ? h('span', { className: 'dsh-oq-recentSaved' }, `+${formatCny(saved)}`)
+                                  : h('span', { className: 'dsh-oq-recentSaved dsh-oq-recentSaved--empty' }, ''),
                           )
                         }),
                       ),
@@ -2963,10 +3241,10 @@ window.__ModuleLoader__.load({
     // ────────────────────────────────────────────────────────────────────────
 
     /** One labelled settings field with an optional hint and error line. */
-    function SettingsField({ id, label, hint, error, wide, children }) {
+    function SettingsField({ id, label, hint, error, children }) {
       return h(
         'div',
-        { className: wide ? 'dsh-oq-field dsh-oq-field--wide' : 'dsh-oq-field' },
+        { className: 'dsh-oq-field' },
         h('label', { className: 'dsh-oq-label', htmlFor: id }, label),
         children,
         hint ? h('span', { className: 'dsh-oq-labelHint' }, hint) : null,
@@ -2975,11 +3253,15 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Collapsible settings editor: max concurrency only. Keeps a local draft so
-     * polling never overwrites what the user is typing.
+     * Settings modal: a centered dialog over the page with a dimmed backdrop,
+     * rendered through the shell.overlay slot so its fixed positioning is
+     * framed against the whole window like the plugin's toasts. Keeps a local
+     * draft so polling never overwrites what the user is typing. Closes on
+     * Escape, the ✕ button or a backdrop click; traps Tab focus and restores
+     * it to the opener on close.
      *
      * @param {{ data: object, store: object, t: Function, onClose: Function }} props - settings props.
-     * @returns {import('react').ReactElement} settings card.
+     * @returns {import('react').ReactElement} settings dialog.
      */
     function SettingsSection({ data, store, t, onClose }) {
       const settings = settingsOf(data)
@@ -2987,6 +3269,9 @@ window.__ModuleLoader__.load({
       const [pending, setPending] = React.useState(false)
       const [fieldErrors, setFieldErrors] = React.useState({})
       const [status, setStatus] = React.useState(null)
+      const dialogRef = React.useRef(null)
+      const onCloseRef = React.useRef(onClose)
+      onCloseRef.current = onClose
 
       const update = (key, value) => {
         setForm((current) => ({ ...current, [key]: value }))
@@ -3018,88 +3303,212 @@ window.__ModuleLoader__.load({
         setStatus({ kind: 'info', text: t('settings.resetHint') })
       }
 
+      const parsedConcurrent = Number.parseInt(form.maxConcurrent, 10)
+      const baseConcurrent =
+        Number.isInteger(parsedConcurrent) && parsedConcurrent >= 1 && parsedConcurrent <= 5
+          ? parsedConcurrent
+          : numberOr(DEFAULT_SETTINGS.maxConcurrent, 1)
+      const stepConcurrent = (delta) => {
+        update('maxConcurrent', String(Math.min(5, Math.max(1, baseConcurrent + delta))))
+      }
+
+      // Focus the dialog, close on Escape and keep Tab focus inside while open;
+      // on unmount, hand focus back to the element that opened the modal.
+      React.useEffect(() => {
+        const node = dialogRef.current
+        if (node && typeof node.focus === 'function') node.focus({ preventScroll: true })
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation()
+            onCloseRef.current()
+            return
+          }
+          if (event.key !== 'Tab' || !dialogRef.current) return
+          const focusables = dialogRef.current.querySelectorAll('button, input, [tabindex]:not([tabindex="-1"])')
+          if (focusables.length === 0) return
+          const first = focusables[0]
+          const last = focusables[focusables.length - 1]
+          const active = document.activeElement
+          if (event.shiftKey && (active === first || active === dialogRef.current)) {
+            event.preventDefault()
+            last.focus()
+          } else if (!event.shiftKey && active === last) {
+            event.preventDefault()
+            first.focus()
+          }
+        }
+        document.addEventListener('keydown', onKeyDown, true)
+        const previous = document.activeElement
+        return () => {
+          document.removeEventListener('keydown', onKeyDown, true)
+          if (previous && typeof previous.focus === 'function') previous.focus()
+        }
+      }, [])
+
       return h(
-        'section',
-        { className: 'dsh-oq-card dsh-oq-settings', id: 'dsh-oq-settings', 'aria-labelledby': 'dsh-oq-settings-title' },
+        'div',
+        {
+          className: 'dsh-oq-modalLayer',
+          role: 'presentation',
+          onClick: (event) => {
+            if (event.target === event.currentTarget) onClose()
+          },
+        },
         h(
-          'div',
-          { className: 'dsh-oq-settingsHead' },
+          'section',
+          {
+            className: 'dsh-oq-modal',
+            id: 'dsh-oq-settings',
+            ref: dialogRef,
+            tabIndex: -1,
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'dsh-oq-settings-title',
+          },
           h(
-            'div',
-            null,
-            h('h2', { className: 'dsh-oq-settingsTitle', id: 'dsh-oq-settings-title' }, t('settings.title')),
-            h('p', { className: 'dsh-oq-settingsSub' }, t('settings.subtitle')),
-          ),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsh-oq-btn dsh-oq-btn--ghost dsh-oq-btn--icon dsh-oq-btn--sm',
-              onClick: onClose,
-              'aria-label': t('action.settingsClose'),
-            },
-            h(CloseIcon),
-          ),
-        ),
-        h(
-          'div',
-          { className: 'dsh-oq-settingsGrid' },
-          h(
-            SettingsField,
-            { id: 'dsh-oq-setting-concurrent', label: t('settings.maxConcurrent'), hint: t('settings.maxConcurrentHint'), error: fieldErrors.maxConcurrent },
+            'header',
+            { className: 'dsh-oq-modalHead' },
             h(
               'div',
-              { className: 'dsh-oq-numberRow' },
-              h('input', {
-                id: 'dsh-oq-setting-concurrent',
-                className: 'dsh-oq-input dsh-oq-number',
-                type: 'number',
-                min: 1,
-                max: 5,
-                step: 1,
-                inputMode: 'numeric',
-                value: form.maxConcurrent,
-                disabled: pending,
-                'aria-invalid': fieldErrors.maxConcurrent ? 'true' : undefined,
-                onChange: (event) => update('maxConcurrent', event.target.value),
-              }),
-              h('span', { className: 'dsh-oq-numberUnit' }, '1–5'),
+              { className: 'dsh-oq-modalHeadText' },
+              h('h2', { className: 'dsh-oq-modalTitle', id: 'dsh-oq-settings-title' }, t('settings.title')),
+              h('p', { className: 'dsh-oq-modalSub' }, t('settings.subtitle')),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsh-oq-btn dsh-oq-btn--ghost dsh-oq-btn--icon dsh-oq-btn--sm',
+                onClick: onClose,
+                'aria-label': t('action.settingsClose'),
+              },
+              h(CloseIcon),
             ),
           ),
-        ),
-        h(
-          'div',
-          { className: 'dsh-oq-settingsActions' },
-          h('button', { type: 'button', className: 'dsh-oq-btn dsh-oq-btn--primary', disabled: pending, onClick: () => void save() }, pending ? t('settings.saving') : t('settings.save')),
           h(
-            'button',
-            { type: 'button', className: 'dsh-oq-btn dsh-oq-btn--outline', onClick: restoreDefaults, disabled: pending },
-            t('settings.reset'),
+            'div',
+            { className: 'dsh-oq-modalBody' },
+            h(
+              'section',
+              { className: 'dsh-oq-settingsGroup' },
+              h(
+                SettingsField,
+                { id: 'dsh-oq-setting-concurrent', label: t('settings.maxConcurrent'), hint: t('settings.maxConcurrentHint'), error: fieldErrors.maxConcurrent },
+                h(
+                  'div',
+                  { className: 'dsh-oq-stepper' },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dsh-oq-stepBtn',
+                      disabled: pending,
+                      'aria-label': t('settings.decrease'),
+                      onClick: () => stepConcurrent(-1),
+                    },
+                    '−',
+                  ),
+                  h('input', {
+                    id: 'dsh-oq-setting-concurrent',
+                    className: 'dsh-oq-stepValue',
+                    type: 'number',
+                    min: 1,
+                    max: 5,
+                    step: 1,
+                    inputMode: 'numeric',
+                    value: form.maxConcurrent,
+                    disabled: pending,
+                    'aria-invalid': fieldErrors.maxConcurrent ? 'true' : undefined,
+                    onChange: (event) => update('maxConcurrent', event.target.value),
+                  }),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dsh-oq-stepBtn',
+                      disabled: pending,
+                      'aria-label': t('settings.increase'),
+                      onClick: () => stepConcurrent(1),
+                    },
+                    '+',
+                  ),
+                ),
+              ),
+            ),
+            h(
+              'section',
+              { className: 'dsh-oq-settingsGroup' },
+              h(
+                'div',
+                { className: 'dsh-oq-field' },
+                h('span', { className: 'dsh-oq-label', id: 'dsh-oq-setting-families' }, t('settings.models')),
+                h('span', { className: 'dsh-oq-labelHint' }, t('settings.modelsHint')),
+              ),
+              h(
+                'div',
+                { className: 'dsh-oq-familySwitches', role: 'group', 'aria-labelledby': 'dsh-oq-setting-families' },
+                FAMILY_ORDER.map((id) =>
+                  h(
+                    'label',
+                    { key: id, className: 'dsh-oq-familySwitch' },
+                    h(
+                      'span',
+                      { className: 'dsh-oq-familySwitchText' },
+                      h('span', { className: 'dsh-oq-familySwitchLabel' }, t(`settings.family.${id}`)),
+                      h('span', { className: 'dsh-oq-familySwitchHint' }, t(`settings.family.${id}Hint`)),
+                    ),
+                    h('input', {
+                      type: 'checkbox',
+                      className: 'dsh-oq-switch',
+                      checked: form.familyEnabled[id] === true,
+                      disabled: pending,
+                      onChange: (event) =>
+                        update('familyEnabled', { ...form.familyEnabled, [id]: event.target.checked }),
+                    }),
+                  ),
+                ),
+              ),
+            ),
           ),
-          status
-            ? h('span', { className: 'dsh-oq-settingsStatus', 'data-kind': status.kind, role: 'status' }, status.text)
-            : fieldErrors.maxConcurrent
-              ? h('span', { className: 'dsh-oq-settingsStatus', 'data-kind': 'error', role: 'status' }, fieldErrors.maxConcurrent)
-              : null,
+          h(
+            'footer',
+            { className: 'dsh-oq-modalFoot' },
+            h(
+              'button',
+              { type: 'button', className: 'dsh-oq-btn dsh-oq-btn--outline', onClick: restoreDefaults, disabled: pending },
+              t('settings.reset'),
+            ),
+            status
+              ? h('span', { className: 'dsh-oq-settingsStatus dsh-oq-modalFootStatus', 'data-kind': status.kind, role: 'status' }, status.text)
+              : fieldErrors.maxConcurrent
+                ? h('span', { className: 'dsh-oq-settingsStatus dsh-oq-modalFootStatus', 'data-kind': 'error', role: 'status' }, fieldErrors.maxConcurrent)
+                : h('span', { className: 'dsh-oq-modalFootStatus', 'aria-hidden': 'true' }),
+            h('button', { type: 'button', className: 'dsh-oq-btn dsh-oq-btn--primary', disabled: pending, onClick: () => void save() }, pending ? t('settings.saving') : t('settings.save')),
+          ),
         ),
       )
+    }
+
+    /**
+     * Shell-overlay mount for the settings modal: reads the shared flag the
+     * management page toggles, so the dialog renders in the frame-wide
+     * floating layer instead of inside the page's scroll tree. Waits for the
+     * first snapshot so the form never mounts from default settings, and so
+     * the dialog node exists when the mount effect focuses it.
+     *
+     * @param {{ flag: object, store: object, t: Function }} props - bridge props.
+     * @returns {import('react').ReactElement|null} modal or null.
+     */
+    function SettingsModalHost({ flag, store, t }) {
+      const open = useStore(flag)
+      const snapshot = useSnapshot(store)
+      if (!open || !snapshot.data) return null
+      return h(SettingsSection, { data: snapshot.data, store, t, onClose: () => flag.set(false) })
     }
 
     // ────────────────────────────────────────────────────────────────────────
     // Management panel page
     // ────────────────────────────────────────────────────────────────────────
-
-    /** Scroll a freshly revealed section into view without fighting motion settings. */
-    function revealNode(node) {
-      if (!node || typeof node.scrollIntoView !== 'function') return
-      let behavior = 'smooth'
-      try {
-        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) behavior = 'auto'
-      } catch {
-        /* matchMedia is optional */
-      }
-      node.scrollIntoView({ block: 'nearest', behavior })
-    }
 
     /**
      * The queue management page: billing chip, awaiting-creation conversations,
@@ -3109,17 +3518,17 @@ window.__ModuleLoader__.load({
      * @param {object} props - injected stores, handlers and locale `t`.
      * @returns {import('react').ReactElement} page.
      */
-    function OffpeakPage({ store, statsStore, seenStore, t, onOpenSession, sessionLabel, onCreateTask }) {
+    function OffpeakPage({ store, statsStore, seenStore, settingsFlag, t, onOpenSession, sessionLabel, onCreateTask }) {
       const snapshot = useSnapshot(store)
       const data = snapshot.data
       const now = nowOf(snapshot)
-      const [settingsOpen, setSettingsOpen] = React.useState(false)
+      const settingsOpen = useStore(settingsFlag)
       const [workspaceChoice, setWorkspaceChoice] = React.useState('')
       const [creating, setCreating] = React.useState(false)
       const [createError, setCreateError] = React.useState('')
       const [topTab, setTopTab] = React.useState('queue')
       const [statusTab, setStatusTab] = React.useState('all')
-      const settingsRef = React.useRef(null)
+      const scrollRef = React.useRef(null)
 
       const ready = snapshot.phase === 'ready' && !!data
       const workspaces = listOf(pick(data, 'workspaces'))
@@ -3169,8 +3578,16 @@ window.__ModuleLoader__.load({
         seenStore.mark(now)
       }, [ready, now, seenStore])
 
+      // While the settings modal is open, keep the page scroll still so wheel
+      // and touch input cannot move the content behind the backdrop.
       React.useEffect(() => {
-        if (settingsOpen) revealNode(settingsRef.current)
+        const node = scrollRef.current
+        if (!node) return undefined
+        if (settingsOpen) node.style.overflow = 'hidden'
+        else node.style.removeProperty('overflow')
+        return () => {
+          node.style.removeProperty('overflow')
+        }
       }, [settingsOpen])
 
       React.useEffect(() => {
@@ -3231,7 +3648,7 @@ window.__ModuleLoader__.load({
         { className: 'dsh-oq-page', 'aria-label': t('title') },
         h(
           'div',
-          { className: 'dsh-oq-scroll' },
+          { className: 'dsh-oq-scroll', ref: scrollRef },
           h(
             'div',
             { className: 'dsh-oq-content' },
@@ -3241,23 +3658,34 @@ window.__ModuleLoader__.load({
               h('div', { className: 'dsh-oq-headMain' }, h('h1', { className: 'dsh-oq-h1' }, t('title'))),
               h(
                 'div',
-                { className: 'dsh-oq-headSide' },
-                h(BillingChip, { data, snapshot, t, onExpire: () => void store.refresh() }),
+                { className: 'dsh-oq-headButtons' },
                 h(
-                  'div',
-                  { className: 'dsh-oq-headButtons' },
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'dsh-oq-btn dsh-oq-btn--outline',
-                      'aria-expanded': settingsOpen ? 'true' : 'false',
-                      'aria-controls': 'dsh-oq-settings',
-                      onClick: () => setSettingsOpen((open) => !open),
-                    },
-                    t('action.settings'),
-                  ),
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dsh-oq-btn dsh-oq-btn--outline',
+                    'aria-haspopup': 'dialog',
+                    'aria-expanded': settingsOpen ? 'true' : 'false',
+                    'aria-controls': 'dsh-oq-settings',
+                    onClick: () => settingsFlag.set(!settingsOpen),
+                  },
+                  t('action.settings'),
                 ),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'dsh-oq-statusStrip' },
+              billingChipsOf(data, t).map((chip) =>
+                h(BillingChip, {
+                  key: chip.id,
+                  label: chip.label,
+                  zone: chip.zone,
+                  period: chip.period,
+                  snapshot,
+                  t,
+                  onExpire: () => void store.refresh(),
+                }),
               ),
             ),
             h(
@@ -3375,9 +3803,6 @@ window.__ModuleLoader__.load({
                 )
               : null,
             ready && topTab === 'stats' ? h(StatsSection, { statsStore, data, t }) : null,
-            settingsOpen
-              ? h('div', { ref: settingsRef }, h(SettingsSection, { data, store, t, onClose: () => setSettingsOpen(false) }))
-              : null,
             ready
               ? h(
                   'footer',
@@ -3474,6 +3899,7 @@ window.__ModuleLoader__.load({
       const statsStore = createStatsStore()
       const seenStore = createSeenStore()
       const toasts = createToastStore()
+      const settingsFlag = createFlagStore(false)
 
       // The page, composer chip, toasts and sidebar marks are different React
       // trees; one plugin-owned stylesheet in <head> styles all of them.
@@ -3496,6 +3922,7 @@ window.__ModuleLoader__.load({
           statsStore.dispose()
           seenStore.dispose()
           toasts.dispose()
+          settingsFlag.dispose()
         },
         'offpeak-queue: snapshot and toast stores',
       )
@@ -3746,7 +4173,7 @@ window.__ModuleLoader__.load({
             name: 'main',
             key: PANEL_ID,
             locale: NS,
-            inject: () => ({ store, statsStore, seenStore, t, onOpenSession: openSession, sessionLabel, onCreateTask: createTaskInWorkspace }),
+            inject: () => ({ store, statsStore, seenStore, settingsFlag, t, onOpenSession: openSession, sessionLabel, onCreateTask: createTaskInWorkspace }),
           },
           OffpeakPage,
         ),
@@ -3836,6 +4263,19 @@ window.__ModuleLoader__.load({
             inject: () => ({ store, toasts, t }),
           },
           OffpeakTaskWatcher,
+        ),
+      )
+
+      ctx.slots.inject('shell.overlay', () =>
+        ctx.slots.register(
+          {
+            name: 'shell.overlay',
+            id: 'offpeak-settings-modal',
+            order: 72,
+            locale: NS,
+            inject: () => ({ flag: settingsFlag, store, t }),
+          },
+          SettingsModalHost,
         ),
       )
 

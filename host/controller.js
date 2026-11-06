@@ -19,6 +19,7 @@ import {
   resolvePeriod,
 } from './policy.js'
 import { titleFromPrompt } from './store.js'
+import { FAMILIES, calendarSettingsFor, classifySelection, familyLabel, validFamily } from './families.js'
 
 /** Freshness window for the cached model catalog. */
 const CATALOG_TTL_MS = 60_000
@@ -103,18 +104,26 @@ function normalizeTaskPatch(input, options) {
  * Sum one run list into the stats range block.
  *
  * @param {object[]} runs - ledger records.
- * @returns {{runs: number, saved: number, cost: number, peakCost: number, peakExtra: number, unpricedRuns: number}} aggregate.
+ * @returns {{runs: number, saved: number, cost: number, peakCost: number, peakExtra: number, points: number|null, pointsSaved: number|null, unpricedRuns: number}} aggregate.
  */
 function aggregateRuns(runs) {
-  const result = { runs: runs.length, saved: 0, cost: 0, peakCost: 0, peakExtra: 0, unpricedRuns: 0 }
+  const result = { runs: runs.length, saved: 0, cost: 0, peakCost: 0, peakExtra: 0, points: 0, pointsSaved: 0, unpricedRuns: 0 }
+  let pointRuns = 0
   const add = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
   for (const run of runs) {
     result.saved += add(run.saved)
     result.cost += add(run.cost)
     result.peakCost += add(run.peakCost)
     result.peakExtra += add(run.peakExtra)
+    if (typeof run.points === 'number') {
+      pointRuns += 1
+      result.points += run.points
+      result.pointsSaved += add(run.pointsSaved)
+    }
     if (run.unpriced) result.unpricedRuns += 1
   }
+  result.points = pointRuns > 0 ? result.points : null
+  result.pointsSaved = pointRuns > 0 ? result.pointsSaved : null
   return result
 }
 
@@ -219,6 +228,35 @@ export function createController(options) {
   }
 
   /**
+   * Family display descriptors with their enable switch.
+   *
+   * @param {object} settings - normalized settings.
+   * @returns {{id: string, label: string, enabled: boolean}[]} descriptors in display order.
+   */
+  function familyDescriptors(settings) {
+    return FAMILIES.map((family) => ({
+      id: family.id,
+      label: family.label,
+      enabled: settings.familyEnabled[family.id] !== false,
+    }))
+  }
+
+  /**
+   * Resolve the current billing period of every family.
+   *
+   * @param {number} stamp - reference instant.
+   * @param {object} settings - normalized settings.
+   * @returns {Map<string, object>} family id → period descriptor.
+   */
+  function familyPeriods(stamp, settings) {
+    const periods = new Map()
+    for (const family of FAMILIES) {
+      periods.set(family.id, resolvePeriod(stamp, calendarSettingsFor(family.id, settings)))
+    }
+    return periods
+  }
+
+  /**
    * Read the model catalog with a short TTL cache (snapshots poll it).
    *
    * @returns {Promise<{default: object|null, groups: object[], failures: object[]}>} catalog.
@@ -286,14 +324,19 @@ export function createController(options) {
    * Attach the derived snapshot fields to one persisted task.
    *
    * @param {object} task - persisted task.
-   * @param {{kind: string, nextOffpeakAt: number}} period - current period.
+   * @param {Map<string, {kind: string, nextOffpeakAt: number}>} periods - family id → current period.
    * @param {number} stamp - snapshot clock.
    * @returns {object} snapshot task.
    */
-  function decorateTask(task, period, stamp) {
+  function decorateTask(task, periods, stamp) {
     let nextRunAt = null
     if (task.status === 'queued') {
-      nextRunAt = task.forceRun ? stamp : period.kind === 'offpeak' ? stamp : period.nextOffpeakAt
+      const period = periods.get(task.modelFamily) ?? periods.get('deepseek')
+      nextRunAt = task.forceRun
+        ? stamp
+        : period.kind === 'offpeak'
+          ? stamp
+          : period.nextOffpeakAt
     }
     let sourceSessionTitle
     if (typeof task.sourceSessionId === 'string') {
@@ -305,8 +348,9 @@ export function createController(options) {
     }
     return {
       ...task,
+      modelFamilyLabel: familyLabel(task.modelFamily),
       nextRunAt,
-      estimateOffPeak: period.kind === 'offpeak',
+      estimateOffPeak: (periods.get(task.modelFamily) ?? periods.get('deepseek')).kind === 'offpeak',
       ...(sourceSessionTitle === undefined || sourceSessionTitle === null ? {} : { sourceSessionTitle }),
     }
   }
@@ -321,11 +365,68 @@ export function createController(options) {
     const settings = store.getSettings()
     const runs = store.listRuns()
     const from = stamp - SNAPSHOT_STATS_DAYS * 86_400_000
+    const inRange = runs.filter((run) => run.finishedAt >= from)
     return {
       lifetime: store.getLifetime(),
-      range: aggregateRuns(runs.filter((run) => run.finishedAt >= from)),
+      range: aggregateRuns(inRange),
+      byFamily: aggregateByFamily(inRange),
       pricesVerifiedAt: settings.pricesVerifiedAt,
     }
+  }
+
+  /**
+   * Aggregate in-range runs per model family (GLM credits included).
+   *
+   * Zero-step runs are skipped (no measured model usage), mirroring `byModel`.
+   *
+   * @param {object[]} runs - ledger records.
+   * @returns {{family: string, runs: number, cost: number, saved: number, points: number|null, pointsSaved: number|null, unpricedRuns: number, tokensIn: number, tokensOut: number}[]} one entry per family with runs.
+   */
+  function aggregateByFamily(runs) {
+    const map = new Map()
+    for (const run of runs) {
+      if (run.steps.length === 0) continue
+      const family = validFamily(run.modelFamily)
+      let entry = map.get(family)
+      if (entry === undefined) {
+        entry = {
+          family,
+          runs: 0,
+          cost: 0,
+          saved: 0,
+          points: 0,
+          pointsSaved: 0,
+          pointRuns: 0,
+          unpricedRuns: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+        }
+        map.set(family, entry)
+      }
+      const add = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+      entry.runs += 1
+      entry.cost += add(run.cost)
+      entry.saved += add(run.saved)
+      if (typeof run.points === 'number') {
+        entry.pointRuns += 1
+        entry.points += run.points
+        entry.pointsSaved += add(run.pointsSaved)
+      }
+      if (run.unpriced) entry.unpricedRuns += 1
+      entry.tokensIn += run.usage.inputTokens
+      entry.tokensOut += run.usage.outputTokens
+    }
+    return FAMILIES.map((family) => map.get(family.id)).filter((entry) => entry !== undefined).map((entry) => ({
+      family: entry.family,
+      runs: entry.runs,
+      cost: entry.cost,
+      saved: entry.saved,
+      points: entry.pointRuns > 0 ? entry.points : null,
+      pointsSaved: entry.pointRuns > 0 ? entry.pointsSaved : null,
+      unpricedRuns: entry.unpricedRuns,
+      tokensIn: entry.tokensIn,
+      tokensOut: entry.tokensOut,
+    }))
   }
 
   /**
@@ -336,9 +437,16 @@ export function createController(options) {
   async function snapshot() {
     const stamp = now()
     const settings = store.getSettings()
-    const period = resolvePeriod(stamp, settings)
+    const periods = familyPeriods(stamp, settings)
+    const families = familyDescriptors(settings)
+    const period = periods.get('deepseek')
+    const periodsPayload = {}
+    for (const family of families) {
+      if (!family.enabled) continue
+      periodsPayload[family.id] = periods.get(family.id)
+    }
     const catalogValue = await catalog()
-    const tasks = store.listTasks().map((task) => decorateTask(task, period, stamp)).sort(taskOrder)
+    const tasks = store.listTasks().map((task) => decorateTask(task, periods, stamp)).sort(taskOrder)
     const models = []
     for (const group of catalogValue.groups) {
       if (typeof group?.id !== 'string' || !Array.isArray(group.models)) continue
@@ -355,6 +463,8 @@ export function createController(options) {
       ok: true,
       now: stamp,
       period,
+      periods: periodsPayload,
+      families,
       settings,
       counts: store.counts(),
       tasks,
@@ -417,15 +527,51 @@ export function createController(options) {
       const key = `${provider}\u0000${model}`
       let entry = byModelMap.get(key)
       if (entry === undefined) {
-        entry = { model, provider, runs: 0, cost: 0, saved: 0, unpriced: false }
+        entry = {
+          model,
+          provider,
+          modelFamily: validFamily(run.modelFamily),
+          runs: 0,
+          cost: 0,
+          saved: 0,
+          points: 0,
+          pointsSaved: 0,
+          pointRuns: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+          unpriced: false,
+        }
         byModelMap.set(key, entry)
       }
       const add = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
       entry.runs += 1
       entry.cost += add(run.cost)
       entry.saved += add(run.saved)
+      if (typeof run.points === 'number') {
+        entry.pointRuns += 1
+        entry.points += run.points
+        entry.pointsSaved += add(run.pointsSaved)
+      }
+      entry.tokensIn += run.usage.inputTokens
+      entry.tokensOut += run.usage.outputTokens
       if (run.unpriced) entry.unpriced = true
     }
+    const byModel = [...byModelMap.values()].map((entry) => ({
+      model: entry.model,
+      provider: entry.provider,
+      modelFamily: entry.modelFamily,
+      runs: entry.runs,
+      cost: entry.cost,
+      saved: entry.saved,
+      points: entry.pointRuns > 0 ? entry.points : null,
+      pointsSaved: entry.pointRuns > 0 ? entry.pointsSaved : null,
+      tokensIn: entry.tokensIn,
+      tokensOut: entry.tokensOut,
+      unpriced: entry.unpriced,
+    }))
+    const familyRank = new Map(FAMILIES.map((family, index) => [family.id, index]))
+    byModel.sort((left, right) => (familyRank.get(left.modelFamily) ?? 0) - (familyRank.get(right.modelFamily) ?? 0)
+      || left.model.localeCompare(right.model))
     const recentRuns = runs
       .slice(-20)
       .reverse()
@@ -434,6 +580,7 @@ export function createController(options) {
         taskId: run.taskId,
         sessionId: run.sessionId,
         title: run.title,
+        modelFamily: validFamily(run.modelFamily),
         model: run.model,
         provider: run.provider,
         trigger: run.trigger,
@@ -445,6 +592,8 @@ export function createController(options) {
         peakCost: run.peakCost,
         saved: run.saved,
         peakExtra: run.peakExtra,
+        points: run.points,
+        pointsSaved: run.pointsSaved,
         unpriced: run.unpriced,
         stepCount: run.steps.length,
       }))
@@ -454,25 +603,33 @@ export function createController(options) {
       days,
       lifetime: store.getLifetime(),
       range: aggregateRuns(inRange),
+      byFamily: aggregateByFamily(inRange),
       byDay,
-      byModel: [...byModelMap.values()],
+      byModel,
       recentRuns,
       pricesVerifiedAt: settings.pricesVerifiedAt,
     }
   }
 
   /**
-   * Compact list for the agent tool: tasks, counts, and the current period.
+   * Compact list for the agent tool: tasks, counts, and per-family periods.
    *
    * @param {number} [limit] - maximum tasks returned.
-   * @returns {{now: number, period: object, settings: object, counts: object, tasks: object[]}} summary.
+   * @returns {{now: number, period: object, periods: object, families: object[], settings: object, counts: object, tasks: object[]}} summary.
    */
   function listSummary(limit = 20) {
     const stamp = now()
     const settings = store.getSettings()
-    const period = resolvePeriod(stamp, settings)
-    const tasks = store.listTasks().map((task) => decorateTask(task, period, stamp)).sort(taskOrder).slice(0, limit)
-    return { now: stamp, period, settings, counts: store.counts(), tasks }
+    const periods = familyPeriods(stamp, settings)
+    const families = familyDescriptors(settings)
+    const period = periods.get('deepseek')
+    const periodsPayload = {}
+    for (const family of families) {
+      if (!family.enabled) continue
+      periodsPayload[family.id] = periods.get(family.id)
+    }
+    const tasks = store.listTasks().map((task) => decorateTask(task, periods, stamp)).sort(taskOrder).slice(0, limit)
+    return { now: stamp, period, periods: periodsPayload, families, settings, counts: store.counts(), tasks }
   }
 
   /**
@@ -521,9 +678,10 @@ export function createController(options) {
   /**
    * Create a queued task from a pre-step-intercepted creation message. The
    * zero-call creation counter is incremented and the session disarmed here so
-   * the interruption cannot be replayed.
+   * the interruption cannot be replayed. The task's billing family comes from
+   * the conversation's resolved model selection at submission time.
    *
-   * @param {{sessionId: string, workspaceId?: string|null, text: string, title?: string, cwd?: string, content?: object[]}} input - intercepted creation.
+   * @param {{sessionId: string, workspaceId?: string|null, text: string, title?: string, cwd?: string, content?: object[], modelFamily?: unknown}} input - intercepted creation.
    * @returns {object|null} created task.
    */
   function createTaskFromCreation(input) {
@@ -533,6 +691,7 @@ export function createController(options) {
       title: input.title ?? titleFromPrompt(input.text),
       prompt: input.text,
       content: Array.isArray(input.content) ? input.content : [],
+      modelFamily: validFamily(input.modelFamily),
       sourceSessionId: input.sessionId,
       sourceWorkspaceId: input.workspaceId ?? null,
       cwd: input.cwd ?? '',
@@ -573,19 +732,32 @@ export function createController(options) {
 
   /**
    * Create a queued task bound to the calling conversation (tool `add`).
+   * The billing family follows the calling session's resolved model selection;
+   * a family whose off-peak tasks are switched off rejects the add.
    *
    * @param {string|null} sessionId - calling session id.
-   * @param {object} input - `{title?, prompt, cwd?}`.
+   * @param {object} input - `{title?, prompt, cwd?, modelSelection?}`.
    * @returns {{ok: true, task: object}} created task.
    */
   function addTaskFromTool(sessionId, input) {
     requireCondition(typeof sessionId === 'string' && sessionId !== '', 'add 需要在会话中调用')
     const patch = normalizeTaskPatch(input, { requirePrompt: true })
+    const selection = input?.modelSelection
+    const family = classifySelection(
+      typeof selection?.provider === 'string' ? selection.provider : undefined,
+      typeof selection?.model === 'string' ? selection.model : undefined,
+    )
+    requireCondition(
+      store.getSettings().familyEnabled[family] !== false,
+      `当前模型（${familyLabel(family)}）的闲时任务未开启，无法加入闲时队列`,
+      409,
+    )
     const prompt = patch.prompt
     const title = patch.title === undefined || patch.title === '' ? titleFromPrompt(prompt) : patch.title
     const task = store.createTask({
       title,
       prompt,
+      modelFamily: family,
       sourceSessionId: sessionId,
       sourceWorkspaceId: null,
       cwd: typeof input.cwd === 'string' ? input.cwd : '',

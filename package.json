@@ -1,8 +1,8 @@
 {
   "name": "dsh-offpeak-queue",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Off-peak task queue: type /闲时任务 in a conversation to queue a task without any model call; DSH runs it in the same conversation during DeepSeek off-peak (half-price) hours.",
+  "description": "Off-peak task queue: type /闲时任务 in a conversation to queue a task without any model call; DSH runs it in the same conversation during each model's off-peak hours (DeepSeek half price, GLM Coding Plan half credits).",
   "license": "MIT",
   "icon": "./icon.svg",
   "repository": {
@@ -21,7 +21,9 @@
     "plugin",
     "off-peak",
     "queue",
-    "deepseek"
+    "deepseek",
+    "glm",
+    "glm-coding-plan"
   ],
   "exports": {
     ".": "./index.js",

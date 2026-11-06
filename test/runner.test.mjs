@@ -474,3 +474,44 @@ test('executionMessageFor replays the stored task content after the instruction'
   const bare = executionMessageFor({ prompt: '   ' }, 'manual', 'm-2')
   assert.deepEqual(bare.content, [{ type: 'text', text: EXECUTION_MESSAGE.manual }])
 })
+
+// ────────────────────────────────────────────────────────────────────────────
+// Model-family step pricing: the tier follows the serving model's calendar
+// ────────────────────────────────────────────────────────────────────────────
+
+test('a GLM step is tiered by the GLM calendar and carries estimated credits', async () => {
+  // Tuesday 10:00 Beijing is inside DeepSeek's morning peak but off-peak for
+  // GLM (14:00–18:00), so the same instant must tier differently per family.
+  const ctx = fakeCtx({ liveSeq: 9 })
+  const runner = makeRunner(ctx)
+  const handle = await runner.start(makeTask({ modelFamily: 'glm' }), SETTINGS, { trigger: 'offpeak' })
+  playCompletedTurn(ctx, handle, {
+    messages: [
+      { text: '好的', usage: { inputTokens: 10000, outputTokens: 2000 }, provider: 'zai-coding-cn', model: 'glm-5.3', at: PEAK_AT },
+    ],
+  })
+  const outcome = await handle.settled
+  assert.equal(outcome.unpriced, true, 'GLM has no CNY price entry')
+  const step = outcome.steps[0]
+  assert.equal(step.tier, 'offpeak', 'the GLM calendar decides the tier, not the DeepSeek one')
+  // (10000*6.9 + 2000*24)/10000 = 11.7 base credits → 5.85 at the half rate.
+  assert.equal(step.points, 5.85)
+  assert.equal(step.pointsSaved, 5.85)
+  assert.equal(outcome.points, 5.85)
+  assert.equal(outcome.pointsSaved, 5.85)
+})
+
+test('a DeepSeek step at the same instant stays peak and carries no credits', async () => {
+  const ctx = fakeCtx({ liveSeq: 9 })
+  const runner = makeRunner(ctx)
+  const handle = await runner.start(makeTask(), SETTINGS, { trigger: 'offpeak' })
+  playCompletedTurn(ctx, handle, {
+    messages: [
+      { text: '收到', usage: { inputTokens: 1000, outputTokens: 100 }, provider: 'deepseek-account', model: 'deepseek-flash', at: PEAK_AT },
+    ],
+  })
+  const outcome = await handle.settled
+  assert.equal(outcome.steps[0].tier, 'peak')
+  assert.equal(outcome.steps[0].points, null)
+  assert.equal(outcome.points, null)
+})

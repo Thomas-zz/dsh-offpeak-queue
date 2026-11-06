@@ -18,6 +18,7 @@
  */
 
 import { DEFAULT_PRICES, DEFAULT_PRICES_VERIFIED_AT, PricingError, mergePrices } from './pricing.js'
+import { FAMILY_IDS, GLM_CALENDAR, defaultFamilyEnabled } from './families.js'
 
 /** Milliseconds in one day. */
 const MS_DAY = 24 * 60 * 60 * 1000
@@ -61,6 +62,7 @@ export const SETTINGS_KEYS = Object.freeze([
   'permissionPreset',
   'prices',
   'pricesVerifiedAt',
+  'familyEnabled',
 ])
 
 /**
@@ -105,6 +107,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   permissionPreset: null,
   prices: DEFAULT_PRICES,
   pricesVerifiedAt: DEFAULT_PRICES_VERIFIED_AT,
+  familyEnabled: Object.freeze({ deepseek: true, glm: true }),
 })
 
 /**
@@ -303,6 +306,16 @@ function cloneSettings(settings) {
     permissionPreset: settings.permissionPreset ?? null,
     prices: Object.fromEntries(Object.entries(settings.prices ?? DEFAULT_PRICES).map(([model, entry]) => [model, { ...entry }])),
     pricesVerifiedAt: settings.pricesVerifiedAt ?? DEFAULT_PRICES_VERIFIED_AT,
+    familyEnabled: (() => {
+      const toggles = defaultFamilyEnabled()
+      const source = settings.familyEnabled
+      if (typeof source === 'object' && source !== null) {
+        for (const id of FAMILY_IDS) {
+          if (typeof source[id] === 'boolean') toggles[id] = source[id]
+        }
+      }
+      return toggles
+    })(),
   }
 }
 
@@ -440,6 +453,17 @@ export function normalizeSettings(partial, base = DEFAULT_SETTINGS) {
       throw new SettingsError('pricesVerifiedAt 必须是 1–40 个字符的字符串')
     }
     settings.pricesVerifiedAt = verifiedAt.trim()
+  }
+  if (Object.hasOwn(partial, 'familyEnabled')) {
+    const value = partial.familyEnabled
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new SettingsError('familyEnabled 必须是对象（模型 id → 布尔开关）')
+    }
+    for (const key of Object.keys(value)) {
+      if (!FAMILY_IDS.includes(key)) throw new SettingsError(`未知的模型开关：${key}`)
+      if (typeof value[key] !== 'boolean') throw new SettingsError(`模型开关 ${key} 必须是布尔值`)
+    }
+    settings.familyEnabled = { ...settings.familyEnabled, ...value }
   }
   settings.holidayYears = holidayYearsOf(settings.holidays)
   return settings
@@ -690,12 +714,29 @@ export function nextOffpeakStart(nowMs, settings) {
 }
 
 /**
- * Human-readable billing rule for tool output and the settings page.
+ * Human-readable billing rule for one family, used by tool output and the
+ * settings page. The DeepSeek calendar follows the persisted settings; the GLM
+ * calendar is the built-in Coding Plan rule.
+ *
+ * @param {'deepseek'|'glm'} familyId - family id.
+ * @param {object} settings - normalized settings.
+ * @returns {string} Chinese rule text.
+ */
+export function formatFamilyRule(familyId, settings) {
+  if (familyId === 'glm') {
+    const windows = GLM_CALENDAR.peakWindows.map((window) => `${window.start}-${window.end}`).join('、')
+    return `GLM 高峰（全积分）：时区 ${GLM_CALENDAR.timeZone}，${formatWeekdays([1, 2, 3, 4, 5])} ${windows}；其余时间闲时（积分 5 折抵扣；官方规则未设节假日豁免）。`
+  }
+  return formatDeepSeekRule(settings)
+}
+
+/**
+ * Human-readable DeepSeek billing rule (legacy single-family wording).
  *
  * @param {object} settings - normalized settings.
  * @returns {string} Chinese rule text.
  */
-export function formatRule(settings) {
+function formatDeepSeekRule(settings) {
   const timeZone = settings.timeZone
   const groups = new Map()
   for (const window of settings.peakWindows) {
@@ -715,7 +756,17 @@ export function formatRule(settings) {
     ? `${settings.holidayYears.join('、')} 年已内置`
     : '未配置'
   const peak = parts.length > 0 ? parts.join('；') : '无（始终闲时）'
-  return `高峰（全价）：时区 ${timeZone}，${peak}；法定节假日（${coverage}，其他年份按工作日估算）全天闲时；其余时间闲时（半价，按完成时刻计费）。`
+  return `DeepSeek 高峰（全价）：时区 ${timeZone}，${peak}；法定节假日（${coverage}，其他年份按工作日估算）全天闲时；其余时间闲时（半价，按完成时刻计费）。`
+}
+
+/**
+ * Human-readable combined rule for every family, used by tool output.
+ *
+ * @param {object} settings - normalized settings.
+ * @returns {string} Chinese rule text.
+ */
+export function formatRule(settings) {
+  return FAMILY_IDS.map((familyId) => formatFamilyRule(familyId, settings)).join('\n')
 }
 
 /**

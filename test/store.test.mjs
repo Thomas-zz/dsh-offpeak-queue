@@ -25,6 +25,7 @@ import {
   resolveDataFile,
   titleFromPrompt,
 } from '../host/store.js'
+import { normalizeSettings } from '../host/policy.js'
 
 /**
  * Create a temp directory for one test.
@@ -406,7 +407,7 @@ test('v1 documents migrate by dropping sourceless tasks and keeping settings', (
   assert.equal(store.getSettings().maxConcurrent, 3)
   assert.deepEqual(store.listRuns(), [])
   assert.equal(store.getLifetime().runs, 0)
-  assert.ok(logger.warnings.some((line) => line.includes('数据从 v1 迁移到 v4')))
+  assert.ok(logger.warnings.some((line) => line.includes('数据从 v1 迁移到 v5')))
   store.flush()
   const payload = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
   assert.equal(payload.version, DATA_VERSION)
@@ -542,4 +543,82 @@ test('task content blocks survive a persistence round-trip and are sanitized on 
 
   const edited = reopened.updateTask(task.id, { content: [{ type: 'text', text: '改过的任务' }] })
   assert.deepEqual(edited.content, [{ type: 'text', text: '改过的任务' }])
+})
+
+// ────────────────────────────────────────────────────────────────────────────
+// Data format v5: model families, per-family switches, GLM credit counters
+// ────────────────────────────────────────────────────────────────────────────
+
+test('v4 documents migrate to v5 with family defaults and rewritten version', () => {
+  const dir = tempDir()
+  const dataFile = path.join(dir, 'queue.json')
+  const logger = captureLogger()
+  fs.writeFileSync(dataFile, JSON.stringify({
+    version: 4,
+    settings: { maxConcurrent: 4 },
+    tasks: [{ id: 't-legacy', sourceSessionId: 'session-old', status: 'queued', title: '旧任务', prompt: '旧任务' }],
+    armed: {},
+    runs: [],
+    lifetime: { runs: 3, saved: 0.5 },
+  }), 'utf8')
+  const store = createStore({ dataFile, logger })
+  assert.equal(store.migratedFrom, 4)
+  assert.deepEqual(store.getSettings().familyEnabled, { deepseek: true, glm: true })
+  assert.equal(store.getTask('t-legacy').modelFamily, 'deepseek')
+  assert.deepEqual(store.getLifetime().familyRuns, { deepseek: 0, glm: 0 }, 'family counters start fresh at migration')
+  assert.ok(logger.warnings.some((line) => line.includes('数据从 v4 迁移到 v5')))
+  store.flush()
+  const payload = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
+  assert.equal(payload.version, DATA_VERSION)
+  assert.equal(payload.tasks[0].modelFamily, 'deepseek')
+})
+
+test('modelFamily is validated on load and persisted on create', () => {
+  const { store, dataFile, dir } = fixture()
+  const glm = store.createTask({ title: 'GLM', prompt: 'GLM', sourceSessionId: 's-1', modelFamily: 'glm' })
+  const bogus = store.createTask({ title: 'x', prompt: 'x', sourceSessionId: 's-2', modelFamily: 'qwen' })
+  assert.equal(glm.modelFamily, 'glm')
+  assert.equal(bogus.modelFamily, 'deepseek', 'unknown families coerce to DeepSeek')
+  store.flush()
+  const raw = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
+  raw.tasks[0].modelFamily = 'weird'
+  fs.writeFileSync(dataFile, JSON.stringify(raw), 'utf8')
+  const reloaded = createStore({ dataFile: path.join(dir, 'queue2.json') })
+  void reloaded
+  const reloadedSame = createStore({ dataFile })
+  assert.equal(reloadedSame.getTask(raw.tasks[0].id).modelFamily, 'deepseek', 'tampered families are sanitized on load')
+})
+
+test('familyEnabled settings validate strictly and merge partially', () => {
+  const { store } = fixture()
+  // The HTTP path merges patches over the current settings before storing,
+  // mirroring `controller.updateSettings`.
+  const step1 = normalizeSettings({ familyEnabled: { glm: false } }, store.getSettings())
+  store.setSettings(step1)
+  assert.deepEqual(store.getSettings().familyEnabled, { deepseek: true, glm: false })
+  const step2 = normalizeSettings({ familyEnabled: { deepseek: false } }, store.getSettings())
+  store.setSettings(step2)
+  assert.deepEqual(store.getSettings().familyEnabled, { deepseek: false, glm: false })
+  assert.throws(() => normalizeSettings({ familyEnabled: { qwen: true } }, store.getSettings()), /未知的模型开关：qwen/)
+  assert.throws(() => normalizeSettings({ familyEnabled: { glm: 'on' } }, store.getSettings()), /模型开关 glm 必须是布尔值/)
+  assert.throws(() => normalizeSettings({ familyEnabled: [true] }, store.getSettings()), /familyEnabled 必须是对象/)
+})
+
+test('recordRun folds per-family counters and GLM credits into the lifetime block', () => {
+  const { store } = fixture()
+  store.recordRun({
+    taskId: 't-glm', sessionId: 's', title: 'GLM', modelFamily: 'glm',
+    model: 'glm-5.3', provider: 'zai', trigger: 'offpeak', startedAt: 1, finishedAt: 2, status: 'done',
+    steps: [{ at: 1, tier: 'offpeak', usage: { inputTokens: 1, outputTokens: 1 }, points: 5, pointsSaved: 5, provider: 'zai', model: 'glm-5.3' }],
+    usage: { inputTokens: 1, outputTokens: 1 }, points: 5, pointsSaved: 5, unpriced: true,
+  })
+  store.recordRun({
+    taskId: 't-ds', sessionId: 's', title: 'DS', trigger: 'offpeak', startedAt: 1, finishedAt: 2, status: 'done',
+    steps: [], usage: { inputTokens: 0, outputTokens: 0 }, unpriced: false,
+  })
+  const lifetime = store.getLifetime()
+  assert.equal(lifetime.familyRuns.glm, 1)
+  assert.equal(lifetime.familyRuns.deepseek, 1, 'runs without provider/model default to the DeepSeek family')
+  assert.equal(lifetime.glmPoints, 5)
+  assert.equal(lifetime.glmPointsSaved, 5)
 })

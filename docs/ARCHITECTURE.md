@@ -5,6 +5,27 @@ agent tool) and the Client half (composer chip, task bar, panel, stats) behave.
 It describes the v2 conversation-first design; earlier v1 notes were internal and are
 not published.
 
+> **Multi-family update (v7, 2026-11-06):** the queue now schedules per **model
+> family** — DeepSeek (calendar from the persisted settings) and GLM (built-in
+> Coding Plan rule, `host/families.js`). `agent/pre-step` classifies the
+> conversation's resolved route from `payload.modelSelection` and stores the
+> family on the task; the scheduler checks each candidate against **its own
+> family's calendar**, and each run step is tiered by the family of the model
+> that actually served it. GLM runs are estimated in Coding-Plan credits
+> (`pricing.js`: official coefficients × measured tokens; no network — GLM has
+> no public API-key usage endpoint, ZCode's balance APIs are behind its own
+> OAuth backend). Settings add `familyEnabled` per family; a disabled family is
+> never intercepted (the arm survives with a dock hint), shows no chip, and
+> `add` rejects it with 409. Data format v5 adds `task.modelFamily`,
+> step/run `points`/`pointsSaved`, lifetime `familyRuns`/`glmPoints`/
+> `glmPointsSaved`; v4 files migrate with defaults. `/snapshot` adds
+> `families` (id/label/enabled) and `periods` (enabled families only; the
+> legacy `period` stays as the DeepSeek view). The panel header renders one
+> billing chip per enabled family, settings gain per-family switches, queue
+> rows/task bars carry family tags, and the stats page splits cards, the
+> by-model table (credits + token columns), the chart's run-count series and
+> recent runs per family.
+
 > **UI update (v3, 2026-11-04):** the creation entry is now the composer command
 > `/闲时任务` plus a compact chip in the composer toolbar (`conversation.input.left`).
 > The panel's workspace select and 「新建闲时任务」 button, the conversation dock card
@@ -85,7 +106,7 @@ not published.
   - 用户正常编辑任务描述、回车提交 → **不调用任何模型**：Host 在 `agent/pre-step` 拦截并拒绝该步，
     只把这条 user 消息记录为任务，返回创建成功提示（dock 卡片 + notify）；
   - 该会话因此产生 `turn/start` → 不再是 blank session，会出现在该工作区的会话列表里，标题改为
-    `闲时任务 · <标题>`；不点开插件也能在工作区看到这个对话；
+    `<标题>`（任务标题本身，不加前缀；侧栏用月亮图标标记闲时会话）；不点开插件也能在工作区看到这个对话；
   - 这个会话就是**来源对话**，到点后**在同一个对话里**执行任务（不再另起执行会话）。
 - 执行方式：
   1. 到闲时自动执行：Host 向来源会话 `sessionController.prompt` 一条开始指令，模型在该对话里干活；
@@ -171,8 +192,9 @@ Host side:
      disarm the session (delete armed record, clear lastError), persist, and **return
      `{ kind: 'reject' }`** — the agent loop then ends the turn as `blocked` with **no model request**
      (`turn/start` was already appended, so the session is non-blank and visible in the sidebar).
-   - Best-effort after creating: `ctx.get('sessionTitle')?.rename(session, '闲时任务 · ' + title)`;
-     register the session-scoped model guidance (§5) on `agent.ctx`; notify nothing else.
+   - Best-effort after creating: `ctx.get('sessionTitle')?.rename(session, title)`（任务标题本身，
+     不加 `闲时任务 · ` 之类前缀）；register the session-scoped model guidance (§5) on `agent.ctx`;
+     notify nothing else.
    - Failures inside the listener must `return next()` (never break the user's turn) and record
      `lastError`/log.
    - The handler must be idempotent for the same session: after creating one task, disarm so later
@@ -352,7 +374,8 @@ concern only.
 1. **Zero-call creation**: in a dev instance, arm + submit a task in a new conversation; inspect the
    session log: `user/message` + `turn/start` + `turn/end` reason `blocked`, and **no**
    `request/header`, **no** `assistant/message`; task queued with `sourceSessionId`; session
-   `blank=false` (appears in workspace session list) and title `闲时任务 · …`; UI shows success.
+   `blank=false` (appears in workspace session list) and title equal to the task title with no
+   prefix; UI shows success.
 2. **Visible in workspace**: the creation conversation shows in the workspace session list (not only in
    the plugin panel) and can be opened after navigating away/reload.
 3. **Auto execution in the same conversation** off-peak: prompt appears as a new user message in that

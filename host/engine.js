@@ -14,6 +14,7 @@
  */
 
 import { resolvePeriod } from './policy.js'
+import { calendarSettingsFor } from './families.js'
 
 /** Default scheduler interval. */
 export const TICK_INTERVAL_MS = 15_000
@@ -96,13 +97,15 @@ export function createEngine(options) {
    *
    * `forceRun` tasks jump the queue and ignore both the off-peak check and the
    * `autoRun` master switch; normal tasks need `autoRun` and an off-peak
-   * instant.
+   * instant **of their own model family's calendar** (DeepSeek and GLM peak at
+   * different hours), so a Tuesday-morning GLM task may start while a DeepSeek
+   * task keeps waiting for its own off-peak window.
    *
-   * @param {{kind: 'peak'|'offpeak'}} period - current billing period.
+   * @param {Function} periodOf - family id → current billing period (cached per pass).
    * @param {object} settings - effective settings.
    * @returns {object|undefined} queued task to start.
    */
-  function pickCandidate(period, settings) {
+  function pickCandidate(periodOf, settings) {
     // A task being edited from its conversation is paused: the edit must land
     // before the scheduler can start it.
     const editing = new Set(
@@ -117,8 +120,7 @@ export function createEngine(options) {
       .sort((left, right) => left.createdAt - right.createdAt || left.order - right.order)
     if (forced.length > 0) return forced[0]
     if (!settings.autoRun) return undefined
-    if (period.kind !== 'offpeak') return undefined
-    return queued.find((task) => !task.forceRun)
+    return queued.find((task) => !task.forceRun && periodOf(task.modelFamily).kind === 'offpeak')
   }
 
   /**
@@ -129,11 +131,19 @@ export function createEngine(options) {
   async function pass() {
     if (disposed) return
     const settings = store.getSettings()
-    const period = resolvePeriod(now(), settings)
+    const stamp = now()
+    const calendarCache = new Map()
+    const periodOf = (familyId) => {
+      const known = calendarCache.get(familyId)
+      if (known !== undefined) return known
+      const period = resolvePeriod(stamp, calendarSettingsFor(familyId, settings))
+      calendarCache.set(familyId, period)
+      return period
+    }
     while (!disposed) {
       const budget = settings.maxConcurrent - runs.size
       if (budget <= 0) return
-      const candidate = pickCandidate(period, settings)
+      const candidate = pickCandidate(periodOf, settings)
       if (candidate === undefined) return
       await launch(candidate, 'offpeak', settings)
     }
@@ -231,6 +241,7 @@ export function createEngine(options) {
       taskId: task.id,
       sessionId: task.sourceSessionId,
       title: task.title,
+      modelFamily: task.modelFamily,
       model: outcome.model ?? null,
       provider: outcome.provider ?? null,
       trigger: run.trigger,
@@ -243,6 +254,8 @@ export function createEngine(options) {
       peakCost: typeof outcome.peakCost === 'number' ? outcome.peakCost : null,
       saved: patch.saved ?? null,
       peakExtra: patch.peakExtra ?? null,
+      points: typeof outcome.points === 'number' ? outcome.points : null,
+      pointsSaved: typeof outcome.pointsSaved === 'number' ? outcome.pointsSaved : null,
       unpriced: outcome.unpriced === true,
     }
   }
@@ -296,6 +309,8 @@ export function createEngine(options) {
       cost: typeof outcome.cost === 'number' ? outcome.cost : null,
       saved: typeof outcome.saved === 'number' ? outcome.saved : null,
       peakExtra: typeof outcome.peakExtra === 'number' ? outcome.peakExtra : null,
+      points: typeof outcome.points === 'number' ? outcome.points : null,
+      pointsSaved: typeof outcome.pointsSaved === 'number' ? outcome.pointsSaved : null,
       steps: Array.isArray(outcome.steps) ? outcome.steps : [],
     }
     if (outcome.kind === 'done') return { ...base, status: 'done', error: null }

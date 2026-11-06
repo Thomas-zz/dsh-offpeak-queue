@@ -112,10 +112,18 @@ function flush() {
  *
  * @param {object} store - queue store.
  * @param {string} title - task title.
+ * @param {{modelFamily?: string}} [options] - task options.
  * @returns {object} added task.
  */
-function add(store, title) {
-  return store.createTask({ title, prompt: title, sourceSessionId: 'session-source', sourceWorkspaceId: 'ws-1', cwd: '/abs/work' })
+function add(store, title, options = {}) {
+  return store.createTask({
+    title,
+    prompt: title,
+    modelFamily: options.modelFamily,
+    sourceSessionId: 'session-source',
+    sourceWorkspaceId: 'ws-1',
+    cwd: '/abs/work',
+  })
 }
 
 /**
@@ -192,6 +200,37 @@ test('off-peak starts queued tasks, records the ledger, and drains the next slot
 
   assert.equal(taskOf(store, second.id).status, 'running', 'next task starts after the settle')
   assert.equal(engine.activeCount(), 1)
+})
+
+/** Tuesday 2026-11-03 10:00 Beijing: DeepSeek peak (09–12) but GLM off-peak. */
+const DEEPSEEK_PEAK_GLM_OFFPEAK = Date.parse('2026-11-03T10:00:00+08:00')
+
+/** Tuesday 2026-11-03 15:00 Beijing: peak for both families. */
+const BOTH_PEAK = Date.parse('2026-11-03T15:00:00+08:00')
+
+test('tasks run on their own family calendar, not a single global period', async () => {
+  // 10:00 Tuesday: DeepSeek is inside 09:00–12:00, GLM is not (14:00–18:00).
+  const { engine, store, runner, clock } = fixture({ now: DEEPSEEK_PEAK_GLM_OFFPEAK })
+  const glmTask = add(store, 'GLM 任务', { modelFamily: 'glm' })
+  const dsTask = add(store, 'DeepSeek 任务', { modelFamily: 'deepseek' })
+  await engine.tickNow()
+  assert.equal(taskOf(store, glmTask.id).status, 'running', 'GLM is off-peak and starts')
+  assert.equal(taskOf(store, dsTask.id).status, 'queued', 'DeepSeek is still inside its morning peak')
+
+  clock.now = BOTH_PEAK
+  const glmPeakTask = add(store, '另一个 GLM 任务', { modelFamily: 'glm' })
+  await engine.tickNow()
+  assert.equal(taskOf(store, glmPeakTask.id).status, 'queued', 'GLM peak blocks the new GLM task')
+  runner.calls[0].resolve(doneOutcome())
+  await flush()
+  assert.equal(taskOf(store, dsTask.id).status, 'queued', '15:00 is still peak for DeepSeek too')
+})
+
+test('disabling a family stops interception but keeps scheduling its queued tasks', async () => {
+  const { engine, store } = fixture({ now: DEEPSEEK_PEAK_GLM_OFFPEAK, settings: { familyEnabled: { glm: false } } })
+  const glmTask = add(store, '已入队 GLM 任务', { modelFamily: 'glm' })
+  await engine.tickNow()
+  assert.equal(taskOf(store, glmTask.id).status, 'running', 'queued tasks keep their family calendar')
 })
 
 test('peak time blocks normal tasks but manual start works any time', async () => {

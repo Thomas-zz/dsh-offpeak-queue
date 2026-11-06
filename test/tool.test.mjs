@@ -170,7 +170,8 @@ test('add binds the calling conversation, registers guidance, and confirms the p
   const { tool, controller, store, guidance } = fixture()
   const { exec } = fakeExec('session-7e43')
   const value = await tool.execute({ action: 'add', title: '整理书稿目录', prompt: '请整理书稿目录并输出 markdown' }, exec)
-  assert.match(value.text, /已加入闲时队列（第 1 个）/)
+  assert.match(value.text, /已加入闲时队列（DeepSeek，第 1 个）/)
+  assert.match(value.text, /模型：DeepSeek/)
   assert.match(value.text, /闲时开始后自动执行/)
   assert.match(value.text, /任务 id：`t-/)
   const task = store.listTasks()[0]
@@ -218,7 +219,9 @@ test('list marks tasks bound to the calling conversation', async () => {
   assert.match(listed.text, /本会话任务（本会话）/)
   assert.match(listed.text, /别人的任务（别人的任务）/)
   assert.equal((listed.text.match(/（本会话）/g) ?? []).length, 1, 'only the bound task is marked')
-  assert.match(listed.text, /\| 状态 \| 标题 \| 时间 \| 任务 id \|/)
+  assert.match(listed.text, /\| 状态 \| 模型 \| 标题 \| 时间 \| 任务 id \|/)
+  assert.match(listed.text, /^DeepSeek 当前：/m)
+  assert.match(listed.text, /^GLM 当前：/m)
 })
 
 test('update / cancel / retry / delete drive the controller', async () => {

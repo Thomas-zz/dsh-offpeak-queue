@@ -10,12 +10,15 @@ import assert from 'node:assert/strict'
 import {
   DEFAULT_PRICES,
   DEFAULT_PRICES_VERIFIED_AT,
+  GLM_POINTS_VERIFIED_AT,
   PricingError,
+  glmPointsRowFor,
   isPricedProvider,
   mergePrices,
   normalizeUsage,
   priceFor,
   stepCost,
+  stepPoints,
   sumRunCost,
 } from '../host/pricing.js'
 import { normalizeSettings, resolvePeriod } from '../host/policy.js'
@@ -132,6 +135,9 @@ test('sumRunCost totals steps, keeps usage, and flags unpriced runs', () => {
     saved: 0,
     peakExtra: 0,
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+    points: null,
+    pointsSaved: null,
+    pointsPartial: false,
     unpriced: false,
   })
 
@@ -172,4 +178,64 @@ test('a run crossing into peak splits cost/saved/peakExtra per step', () => {
   assert.equal(totals.saved, 0.0014)
   assert.equal(totals.peakExtra, 0.0014)
   assert.equal(Math.round(totals.cost * 1e6) / 1e6, 0.0042, 'cross-peak actual cost matches the formula')
+})
+
+// ────────────────────────────────────────────────────────────────────────────
+// GLM Coding Plan credit estimation
+// ────────────────────────────────────────────────────────────────────────────
+
+test('glmPointsRowFor matches the longest model prefix', () => {
+  assert.equal(glmPointsRowFor('glm-5.3').input, 6.9)
+  assert.equal(glmPointsRowFor('GLM-5.3-Flash').input, 2.3, 'flash wins over the shorter glm-5.3 prefix')
+  assert.equal(glmPointsRowFor('glm-5.3-flashx').input, 2.3)
+  assert.equal(glmPointsRowFor('glm-4.6'), null, 'historical models outside the published table are unpriced')
+  assert.equal(glmPointsRowFor('deepseek-flash'), null)
+  assert.equal(glmPointsRowFor(undefined), null)
+  assert.equal(typeof GLM_POINTS_VERIFIED_AT, 'string')
+})
+
+test('stepPoints estimates GLM credits with the off-peak half discount', () => {
+  const usage = { inputTokens: 10000, cacheReadTokens: 5000, outputTokens: 2000 }
+  // glm-5.3: (10000*6.9 + 5000*1.7 + 2000*24)/10000 = 12.55 base credits.
+  const peak = stepPoints({ tier: 'peak', usage, provider: 'zai-coding-cn', model: 'glm-5.3' })
+  assert.equal(peak.priced, true)
+  assert.equal(peak.points, 12.55)
+  assert.equal(peak.pointsSaved, 0)
+  const offpeak = stepPoints({ tier: 'offpeak', usage, provider: 'zai', model: 'glm-5.3' })
+  assert.equal(offpeak.points, 12.55 * 0.5)
+  assert.equal(offpeak.pointsSaved, 12.55 * 0.5)
+})
+
+test('stepPoints uses the flash coefficients and cache reads at the cached rate', () => {
+  const usage = { inputTokens: 1000, cacheReadTokens: 1000, outputTokens: 1000 }
+  // glm-5.3-flash: (1000*2.3 + 1000*0.56 + 1000*8)/10000 = 1.086 base credits.
+  const result = stepPoints({ tier: 'peak', usage, provider: 'zai', model: 'glm-5.3-flash' })
+  assert.equal(result.points, 1.086)
+})
+
+test('stepPoints stays null for non-GLM families and unknown GLM models', () => {
+  const deepseek = stepPoints({ tier: 'peak', usage: { inputTokens: 1 }, provider: 'deepseek-account', model: 'deepseek-flash' })
+  assert.deepEqual(deepseek, { priced: false, points: null, pointsSaved: null })
+  const unknown = stepPoints({ tier: 'offpeak', usage: { inputTokens: 1 }, provider: 'zai', model: 'glm-9' })
+  assert.deepEqual(unknown, { priced: false, points: null, pointsSaved: null })
+})
+
+test('sumRunCost folds GLM credits alongside CNY and flags partial runs', () => {
+  const glmOffpeak = { usage: normalizeUsage({ inputTokens: 10000 }), cost: null, points: 5, pointsSaved: 5 }
+  const glmPeak = { usage: normalizeUsage({ inputTokens: 1000 }), cost: null, points: 10, pointsSaved: 0 }
+  const mixed = sumRunCost([glmOffpeak, glmPeak])
+  assert.equal(mixed.cost, null)
+  assert.equal(mixed.unpriced, true)
+  assert.equal(mixed.points, 15)
+  assert.equal(mixed.pointsSaved, 5)
+  assert.equal(mixed.pointsPartial, false)
+
+  const partial = sumRunCost([glmOffpeak, { usage: normalizeUsage({ inputTokens: 1 }), cost: null, points: null }])
+  assert.equal(partial.points, 5)
+  assert.equal(partial.pointsPartial, true)
+
+  const none = sumRunCost([{ usage: normalizeUsage({ inputTokens: 1 }), cost: null }])
+  assert.equal(none.points, null)
+  assert.equal(none.pointsSaved, null)
+  assert.equal(none.pointsPartial, false)
 })

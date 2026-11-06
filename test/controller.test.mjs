@@ -157,7 +157,18 @@ test('snapshot carries the v2 contract shape with armed sessions and stats', asy
     tokensOut: 0,
     zeroCallCreations: 0,
     unpricedRuns: 0,
+    familyRuns: { deepseek: 0, glm: 0 },
+    glmPoints: 0,
+    glmPointsSaved: 0,
   })
+  assert.deepEqual(snapshot.families, [
+    { id: 'deepseek', label: 'DeepSeek', enabled: true },
+    { id: 'glm', label: 'GLM', enabled: true },
+  ])
+  assert.equal(snapshot.periods.deepseek, snapshot.period)
+  assert.equal(snapshot.periods.deepseek.kind, 'offpeak')
+  assert.equal(snapshot.periods.glm.kind, 'offpeak')
+  assert.deepEqual(snapshot.stats.byFamily, [])
   assert.equal(snapshot.stats.pricesVerifiedAt, '2026-10-10')
 })
 
@@ -410,4 +421,106 @@ test('listSummary returns decorated, bounded tasks for the agent tool', () => {
   assert.equal(summary.period.kind, 'offpeak')
   assert.equal(summary.tasks[0].sourceSessionId, 'session-source')
   assert.equal(controller.listSummary(3).tasks.length, 3)
+})
+
+// ────────────────────────────────────────────────────────────────────────────
+// Model families: snapshot gating, per-family scheduling hints, stats split
+// ────────────────────────────────────────────────────────────────────────────
+
+test('a GLM task scheduled during DeepSeek peak uses the GLM calendar for nextRunAt', async () => {
+  // Tuesday 10:00: DeepSeek peak until 12:00, GLM off-peak right now.
+  const { controller, clock } = fixture({ now: PEAK_NOW })
+  const glmTask = controller.createTaskFromCreation({ sessionId: 'session-glm', text: 'GLM 任务', modelFamily: 'glm' })
+  const dsTask = controller.createTaskFromCreation({ sessionId: 'session-ds', text: 'DS 任务', modelFamily: 'deepseek' })
+  const snapshot = await controller.snapshot()
+  const glm = snapshot.tasks.find((task) => task.id === glmTask.id)
+  const ds = snapshot.tasks.find((task) => task.id === dsTask.id)
+  assert.equal(glm.modelFamily, 'glm')
+  assert.equal(glm.modelFamilyLabel, 'GLM')
+  assert.equal(glm.nextRunAt, snapshot.now, 'GLM is off-peak at 10:00 and runs immediately')
+  assert.equal(ds.nextRunAt, Date.parse('2026-11-03T12:00:00+08:00'), 'DeepSeek waits for its own off-peak')
+  assert.equal(snapshot.periods.glm.kind, 'offpeak')
+  assert.equal(snapshot.periods.deepseek.kind, 'peak')
+  clock.now = OFFPEAK_NOW
+})
+
+test('snapshot hides periods of disabled families but keeps decorating their tasks', async () => {
+  const { controller, store } = fixture()
+  store.setSettings({ familyEnabled: { glm: false } })
+  const glmTask = controller.createTaskFromCreation({ sessionId: 'session-glm', text: 'GLM 任务', modelFamily: 'glm' })
+  const snapshot = await controller.snapshot()
+  assert.deepEqual(snapshot.families, [
+    { id: 'deepseek', label: 'DeepSeek', enabled: true },
+    { id: 'glm', label: 'GLM', enabled: false },
+  ])
+  assert.equal(snapshot.periods.glm, undefined, 'a disabled family shows no chip')
+  assert.ok(snapshot.periods.deepseek, 'the enabled family still shows')
+  const glm = snapshot.tasks.find((task) => task.id === glmTask.id)
+  assert.equal(glm.nextRunAt, snapshot.now, '13:00 is off-peak for GLM too, so the hint stays honest')
+})
+
+test('addTaskFromTool classifies the calling model and rejects a disabled family', () => {
+  const { controller, store } = fixture()
+  const glm = controller.addTaskFromTool('session-glm', {
+    prompt: 'GLM 任务',
+    modelSelection: { provider: 'zai-coding-cn', model: 'glm-5.3' },
+  })
+  assert.equal(glm.task.modelFamily, 'glm')
+  const fallback = controller.addTaskFromTool('session-any', { prompt: '普通任务' })
+  assert.equal(fallback.task.modelFamily, 'deepseek', 'missing selections default to DeepSeek')
+
+  store.setSettings({ familyEnabled: { glm: false } })
+  assert.throws(
+    () => controller.addTaskFromTool('session-glm2', { prompt: '再试', modelSelection: { provider: 'zai', model: 'glm-4.6' } }),
+    (error) => error instanceof ControllerError && error.status === 409 && /GLM/.test(error.message),
+  )
+})
+
+test('stats split by family with GLM credits, token totals, and per-model points', () => {
+  const { controller, store } = fixture()
+  store.recordRun({
+    taskId: 't-ds', sessionId: 'session-source', title: 'DS', modelFamily: 'deepseek',
+    model: 'deepseek-flash', provider: 'deepseek-account', trigger: 'offpeak',
+    startedAt: OFFPEAK_NOW, finishedAt: OFFPEAK_NOW + 1000, status: 'done',
+    steps: [{ at: OFFPEAK_NOW, tier: 'offpeak', usage: { inputTokens: 1000, outputTokens: 100 }, cost: 0.4, peakCost: 0.8, saved: 0.4, peakExtra: 0, provider: 'deepseek-account', model: 'deepseek-flash' }],
+    usage: { inputTokens: 1000, outputTokens: 100 }, cost: 0.4, peakCost: 0.8, saved: 0.4, peakExtra: 0, unpriced: false,
+  })
+  store.recordRun({
+    taskId: 't-glm', sessionId: 'session-source', title: 'GLM', modelFamily: 'glm',
+    model: 'glm-5.3', provider: 'zai-coding-cn', trigger: 'offpeak',
+    startedAt: OFFPEAK_NOW, finishedAt: OFFPEAK_NOW + 2000, status: 'done',
+    steps: [{ at: OFFPEAK_NOW, tier: 'offpeak', usage: { inputTokens: 10000, outputTokens: 2000 }, points: 5.5, pointsSaved: 5.5, provider: 'zai-coding-cn', model: 'glm-5.3' }],
+    usage: { inputTokens: 10000, outputTokens: 2000 }, cost: null, peakCost: null, saved: null, peakExtra: null, points: 5.5, pointsSaved: 5.5, unpriced: true,
+  })
+  const stats = controller.stats('7')
+  assert.deepEqual(stats.byFamily.map((entry) => entry.family), ['deepseek', 'glm'])
+  const glmFamily = stats.byFamily.find((entry) => entry.family === 'glm')
+  assert.equal(glmFamily.runs, 1)
+  assert.equal(glmFamily.points, 5.5)
+  assert.equal(glmFamily.pointsSaved, 5.5)
+  assert.equal(glmFamily.tokensIn, 10000)
+  const glmModel = stats.byModel.find((entry) => entry.model === 'glm-5.3')
+  assert.equal(glmModel.modelFamily, 'glm')
+  assert.equal(glmModel.points, 5.5)
+  assert.equal(glmModel.tokensIn + glmModel.tokensOut, 12000)
+  assert.equal(stats.range.points, 5.5)
+  assert.equal(stats.range.pointsSaved, 5.5)
+  assert.equal(stats.recentRuns[0].modelFamily, 'glm', 'recent runs carry their family')
+
+  const lifetime = store.getLifetime()
+  assert.equal(lifetime.familyRuns.glm, 1)
+  assert.equal(lifetime.familyRuns.deepseek, 1)
+  assert.equal(lifetime.glmPoints, 5.5)
+  assert.equal(lifetime.glmPointsSaved, 5.5)
+})
+
+test('updateSettings merges family switches over the live settings', async () => {
+  const { controller, store } = fixture()
+  const first = controller.updateSettings({ familyEnabled: { glm: false } })
+  assert.deepEqual(first.settings.familyEnabled, { deepseek: true, glm: false })
+  const second = controller.updateSettings({ familyEnabled: { deepseek: false } })
+  assert.deepEqual(second.settings.familyEnabled, { deepseek: false, glm: false }, 'the earlier switch survives')
+  const snapshot = await controller.snapshot()
+  assert.equal(snapshot.periods.glm, undefined, 'a disabled family is hidden from the chips')
+  assert.deepEqual(store.getSettings().familyEnabled, { deepseek: false, glm: false })
 })

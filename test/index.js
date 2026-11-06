@@ -17,6 +17,7 @@ const entry = process.argv[1] ?? ''
 if (!entry.endsWith('.js') && !entry.endsWith('.mjs') && !entry.endsWith('.cjs')) {
   await import('./policy.test.mjs')
   await import('./pricing.test.mjs')
+  await import('./families.test.mjs')
   await import('./store.test.mjs')
   await import('./prestep.test.mjs')
   await import('./controller.test.mjs')

@@ -17,9 +17,10 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { DEFAULT_SETTINGS, normalizeSettings, SettingsError } from './policy.js'
 import { normalizeUsage } from './pricing.js'
+import { validFamily } from './families.js'
 
 /** Persisted format version written by this plugin. */
-export const DATA_VERSION = 4
+export const DATA_VERSION = 5
 
 /** Statuses a task may carry. */
 export const TASK_STATUSES = Object.freeze(['queued', 'running', 'done', 'failed', 'cancelled'])
@@ -69,6 +70,9 @@ export function emptyLifetime() {
     tokensOut: 0,
     zeroCallCreations: 0,
     unpricedRuns: 0,
+    familyRuns: { deepseek: 0, glm: 0 },
+    glmPoints: 0,
+    glmPointsSaved: 0,
   }
 }
 
@@ -176,6 +180,8 @@ function sanitizeStep(raw) {
     peakCost: numberOrNull(raw.peakCost),
     saved: numberOrNull(raw.saved),
     peakExtra: numberOrNull(raw.peakExtra),
+    points: numberOrNull(raw.points),
+    pointsSaved: numberOrNull(raw.pointsSaved),
     provider: typeof raw.provider === 'string' ? raw.provider : null,
     model: typeof raw.model === 'string' ? raw.model : null,
   }
@@ -256,6 +262,7 @@ function sanitizeTask(raw, now) {
     prompt: clampText(typeof raw.prompt === 'string' ? raw.prompt : '', MAX_PROMPT_LENGTH),
     content: sanitizeContent(raw.content),
     status,
+    modelFamily: validFamily(raw.modelFamily),
     sourceSessionId,
     sessionId: typeof raw.sessionId === 'string' && raw.sessionId !== '' ? raw.sessionId : sourceSessionId,
     sourceWorkspaceId: typeof raw.sourceWorkspaceId === 'string' && raw.sourceWorkspaceId !== '' ? raw.sourceWorkspaceId : null,
@@ -274,6 +281,8 @@ function sanitizeTask(raw, now) {
     cost: numberOrNull(raw.cost),
     saved: numberOrNull(raw.saved),
     peakExtra: numberOrNull(raw.peakExtra),
+    points: numberOrNull(raw.points),
+    pointsSaved: numberOrNull(raw.pointsSaved),
     steps: sanitizeSteps(raw.steps),
     baseline: numberOrNull(raw.baseline),
   }
@@ -319,6 +328,7 @@ function sanitizeRun(raw) {
     taskId: typeof raw.taskId === 'string' ? raw.taskId : null,
     sessionId: typeof raw.sessionId === 'string' ? raw.sessionId : null,
     title: typeof raw.title === 'string' ? clampText(raw.title, MAX_TITLE_LENGTH) : '',
+    modelFamily: validFamily(raw.modelFamily),
     model: typeof raw.model === 'string' && raw.model !== '' ? raw.model : null,
     provider: typeof raw.provider === 'string' && raw.provider !== '' ? raw.provider : null,
     trigger: raw.trigger === 'manual' ? 'manual' : 'offpeak',
@@ -331,6 +341,8 @@ function sanitizeRun(raw) {
     peakCost: numberOrNull(raw.peakCost),
     saved: numberOrNull(raw.saved),
     peakExtra: numberOrNull(raw.peakExtra),
+    points: numberOrNull(raw.points),
+    pointsSaved: numberOrNull(raw.pointsSaved),
     unpriced: raw.unpriced === true,
   }
 }
@@ -345,9 +357,19 @@ function sanitizeLifetime(raw) {
   const lifetime = emptyLifetime()
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return lifetime
   for (const key of Object.keys(lifetime)) {
+    if (key === 'familyRuns') continue
     const value = raw[key]
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
       lifetime[key] = key === 'runs' || key === 'zeroCallCreations' || key === 'unpricedRuns' ? Math.trunc(value) : value
+    }
+  }
+  const familyRuns = raw.familyRuns
+  if (typeof familyRuns === 'object' && familyRuns !== null && !Array.isArray(familyRuns)) {
+    for (const id of ['deepseek', 'glm']) {
+      const value = familyRuns[id]
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        lifetime.familyRuns[id] = Math.trunc(value)
+      }
     }
   }
   return lifetime
@@ -553,6 +575,7 @@ export function createStore(options = {}) {
       holidays: [...settings.holidays],
       holidayYears: [...settings.holidayYears],
       prices: Object.fromEntries(Object.entries(settings.prices).map(([model, entry]) => [model, { ...entry }])),
+      familyEnabled: { ...settings.familyEnabled },
     }
   }
 
@@ -621,6 +644,20 @@ export function createStore(options = {}) {
   function migrateV3Settings() {
     state.settings.autoRun = true
     warn(`offpeak-queue: 数据从 v3 迁移到 v${DATA_VERSION}，闲时任务改为始终自动执行`)
+    markDirty()
+  }
+
+  /**
+   * Migrate a version-4 document to v5: the multi-family update adds
+   * `modelFamily` (defaults to DeepSeek through sanitization) and the
+   * per-family enable switches plus GLM credit counters (defaults via
+   * `normalizeSettings`/`sanitizeLifetime`), so no field surgery is needed —
+   * only a persisted version bump.
+   *
+   * @returns {void}
+   */
+  function migrateV4Document() {
+    warn(`offpeak-queue: 数据从 v4 迁移到 v${DATA_VERSION}，任务补充模型维度（默认 DeepSeek），新增按模型开关与 GLM 积分统计`)
     markDirty()
   }
 
@@ -697,7 +734,7 @@ export function createStore(options = {}) {
       quarantine('不是合法 JSON')
       return
     }
-    if (typeof parsed !== 'object' || parsed === null || (parsed.version !== DATA_VERSION && parsed.version !== 3 && parsed.version !== 2 && parsed.version !== 1)) {
+    if (typeof parsed !== 'object' || parsed === null || (parsed.version !== DATA_VERSION && parsed.version !== 4 && parsed.version !== 3 && parsed.version !== 2 && parsed.version !== 1)) {
       quarantine(`数据版本不受支持（${String(parsed?.version)}）`)
       return
     }
@@ -738,6 +775,7 @@ export function createStore(options = {}) {
     }
     if (fromVersion === 2) migrateV2Settings()
     if (fromVersion === 2 || fromVersion === 3) migrateV3Settings()
+    if (fromVersion === 4) migrateV4Document()
     let recovered = false
     for (const task of state.tasks) {
       if (task.status !== 'running') continue
@@ -773,6 +811,7 @@ export function createStore(options = {}) {
       prompt: clampText(fields.prompt, MAX_PROMPT_LENGTH),
       content: sanitizeContent(fields.content),
       status: 'queued',
+      modelFamily: validFamily(fields.modelFamily),
       sourceSessionId: fields.sourceSessionId,
       sessionId: fields.sourceSessionId,
       sourceWorkspaceId: fields.sourceWorkspaceId ?? null,
@@ -791,6 +830,8 @@ export function createStore(options = {}) {
       cost: null,
       saved: null,
       peakExtra: null,
+      points: null,
+      pointsSaved: null,
       steps: [],
       baseline: null,
     }
@@ -879,6 +920,8 @@ export function createStore(options = {}) {
     task.cost = null
     task.saved = null
     task.peakExtra = null
+    task.points = null
+    task.pointsSaved = null
     task.steps = []
     task.baseline = null
     task.runTrigger = null
@@ -951,6 +994,8 @@ export function createStore(options = {}) {
     task.cost = null
     task.saved = null
     task.peakExtra = null
+    task.points = null
+    task.pointsSaved = null
     task.steps = []
     task.baseline = null
     task.runTrigger = runTrigger
@@ -1002,6 +1047,8 @@ export function createStore(options = {}) {
     task.cost = typeof outcome.cost === 'number' ? outcome.cost : null
     task.saved = typeof outcome.saved === 'number' ? outcome.saved : null
     task.peakExtra = typeof outcome.peakExtra === 'number' ? outcome.peakExtra : null
+    task.points = typeof outcome.points === 'number' ? outcome.points : null
+    task.pointsSaved = typeof outcome.pointsSaved === 'number' ? outcome.pointsSaved : null
     task.steps = sanitizeSteps(outcome.steps)
     task.forceRun = false
     commit()
@@ -1024,11 +1071,18 @@ export function createStore(options = {}) {
     if (state.runs.length > MAX_RUNS) state.runs = state.runs.slice(-MAX_RUNS)
     const lifetime = state.lifetime
     lifetime.runs += 1
+    // Zero-step runs carry no provider/model, so their family defaults to
+    // DeepSeek — an accepted approximation for cancelled/failed starts.
+    lifetime.familyRuns[run.modelFamily] += 1
     const add = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
     lifetime.saved += add(run.saved)
     lifetime.cost += add(run.cost)
     lifetime.peakCost += add(run.peakCost)
     lifetime.peakExtra += add(run.peakExtra)
+    if (run.modelFamily === 'glm') {
+      lifetime.glmPoints += add(run.points)
+      lifetime.glmPointsSaved += add(run.pointsSaved)
+    }
     lifetime.tokensIn += run.usage.inputTokens
     lifetime.tokensOut += run.usage.outputTokens
     if (run.unpriced) lifetime.unpricedRuns += 1
