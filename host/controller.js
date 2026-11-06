@@ -7,7 +7,7 @@
  * aggregation over the run ledger. Store handles persistence; engine handles
  * scheduling and execution.
  *
- * @module dsh-offpeak-queue/host/controller
+ * @module @zayn_/dsh-offpeak-queue/host/controller
  */
 
 import path from 'node:path'

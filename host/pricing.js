@@ -7,7 +7,7 @@
  * completion moment (`assistant/message` event time), so a run that crosses
  * into a peak window is priced per step.
  *
- * @module dsh-offpeak-queue/host/pricing
+ * @module @zayn_/dsh-offpeak-queue/host/pricing
  */
 
 import { classifySelection } from './families.js'

@@ -1,5 +1,5 @@
 /**
- * Host half of `dsh-offpeak-queue` (v2).
+ * Host half of `@zayn_/dsh-offpeak-queue` (v2).
  *
  * Conversation-first off-peak tasks: a conversation is "armed" from the panel,
  * the user's submitted task message is intercepted in the global
@@ -11,7 +11,7 @@
  * registration is owned by a Cordis effect and disposed on unload; `apply`
  * returns a final flush for the data file.
  *
- * @module dsh-offpeak-queue
+ * @module @zayn_/dsh-offpeak-queue
  */
 
 import { createStore } from './host/store.js'

@@ -10,7 +10,7 @@
  * (`POST /tasks/:id/start`, tool `run_now`/`run_current`) bypass the off-peak
  * gate but share the same run ledger and concurrency accounting.
  *
- * @module dsh-offpeak-queue/host/engine
+ * @module @zayn_/dsh-offpeak-queue/host/engine
  */
 
 import { resolvePeriod } from './policy.js'

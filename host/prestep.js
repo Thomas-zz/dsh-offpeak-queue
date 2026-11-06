@@ -16,7 +16,7 @@
  * corrupt log that fails to load on the next launch. The task content is kept
  * on the task record and replayed with the execution instruction instead.
  *
- * @module dsh-offpeak-queue/host/prestep
+ * @module @zayn_/dsh-offpeak-queue/host/prestep
  */
 
 import { titleFromPrompt } from './store.js'

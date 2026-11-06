@@ -5,7 +5,7 @@
  * logic: only a same-origin page served by this DSH instance may call the
  * route. Bodies are bounded JSON; every reply is JSON with a top-level `ok`.
  *
- * @module dsh-offpeak-queue/host/routes
+ * @module @zayn_/dsh-offpeak-queue/host/routes
  */
 
 import { ControllerError } from './controller.js'

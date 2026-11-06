@@ -7,7 +7,7 @@
  * touches the network. User mistakes surface as readable Chinese `isError`
  * tool results.
  *
- * @module dsh-offpeak-queue/host/tool
+ * @module @zayn_/dsh-offpeak-queue/host/tool
  */
 
 import { formatRule } from './policy.js'

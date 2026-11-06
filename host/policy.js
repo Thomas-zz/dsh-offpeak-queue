@@ -14,7 +14,7 @@
  * - settings `peakWindows[].weekdays` are ISO weekdays: 1=Monday … 7=Sunday.
  * - `period.weekday` in the snapshot is JavaScript `getDay()`: 0=Sunday … 6=Saturday.
  *
- * @module dsh-offpeak-queue/host/policy
+ * @module @zayn_/dsh-offpeak-queue/host/policy
  */
 
 import { DEFAULT_PRICES, DEFAULT_PRICES_VERIFIED_AT, PricingError, mergePrices } from './pricing.js'

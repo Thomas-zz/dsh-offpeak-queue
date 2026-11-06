@@ -8,7 +8,7 @@
  * tiered pricing), and settles at that turn's `turn/end` (or timeout / cancel).
  * Costs are computed per step from the step's completion instant.
  *
- * @module dsh-offpeak-queue/host/runner
+ * @module @zayn_/dsh-offpeak-queue/host/runner
  */
 
 import { randomUUID } from 'node:crypto'

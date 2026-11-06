@@ -14,7 +14,7 @@
  *   off-peak calls consume 50% of the base credits; peak = Mon–Fri
  *   14:00–18:00 UTC+8. The published rule has no holiday carve-out.
  *
- * @module dsh-offpeak-queue/host/families
+ * @module @zayn_/dsh-offpeak-queue/host/families
  */
 
 /** Built-in family ids, display order. */

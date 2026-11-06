@@ -8,7 +8,7 @@
  * forces one write. Loading migrates v1 documents, quarantines corrupt files,
  * prunes stale arms, and reconciles runs interrupted by a DSH restart.
  *
- * @module dsh-offpeak-queue/host/store
+ * @module @zayn_/dsh-offpeak-queue/host/store
  */
 
 import fs from 'node:fs'

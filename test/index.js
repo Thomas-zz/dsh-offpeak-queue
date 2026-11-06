@@ -9,7 +9,7 @@
  * files here keeps that command working, while `node --test` auto-discovery
  * still runs each `*.test.mjs` once — this file is a no-op in that mode.
  *
- * @module dsh-offpeak-queue/test
+ * @module @zayn_/dsh-offpeak-queue/test
  */
 
 const entry = process.argv[1] ?? ''

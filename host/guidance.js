@@ -7,7 +7,7 @@
  * user request to “execute this task” may call `run_current`. The section is
  * disposed when the task settles/cancels or the plugin unloads.
  *
- * @module dsh-offpeak-queue/host/guidance
+ * @module @zayn_/dsh-offpeak-queue/host/guidance
  */
 
 /** Prompt-section order: before the tool sections, after policy sections. */

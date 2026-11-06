@@ -1,5 +1,5 @@
 /**
- * Client half of dsh-offpeak-queue.
+ * Client half of @zayn_/dsh-offpeak-queue.
  *
  * Conversation-first off-peak tasks, entered from the composer:
  * - `/闲时任务` in the composer arms the current conversation for zero-call
@@ -16,7 +16,7 @@
  * Only `react` is imported; the module owns its locale namespace, stores and CSS.
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-offpeak-queue',
+  id: '@zayn_/dsh-offpeak-queue',
   factory(require) {
     const React = require('react')
     const h = React.createElement
@@ -3906,8 +3906,8 @@ window.__ModuleLoader__.load({
       // Removing it on unload restores the page exactly.
       ctx.effect(() => {
         const tag = document.createElement('style')
-        tag.dataset.plugin = 'dsh-offpeak-queue'
-        tag.dataset.pluginCss = 'dsh-offpeak-queue/styles'
+        tag.dataset.plugin = '@zayn_/dsh-offpeak-queue'
+        tag.dataset.pluginCss = '@zayn_/dsh-offpeak-queue/styles'
         tag.textContent = STYLES + STYLES_EXTRA
         document.head.appendChild(tag)
         return () => {

@@ -1,4 +1,4 @@
-# 闲时任务队列 · dsh-offpeak-queue
+# 闲时任务队列 · @zayn_/dsh-offpeak-queue
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-6f42c1.svg)](#安装)
@@ -79,7 +79,7 @@ DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
 
 **方式二：插件管理器**
 
-在 DSH 的「设置 → 插件」里从本地目录安装 `dsh-offpeak-queue`，再确认 profile 的 `dsh.profile.bundles` 里已包含 `dsh-offpeak-queue`（`dsh plugin add` 会自动加）。
+在 DSH 的「设置 → 插件」里从本地目录安装 `@zayn_/dsh-offpeak-queue`，再确认 profile 的 `dsh.profile.bundles` 里已包含 `@zayn_/dsh-offpeak-queue`（`dsh plugin add` 会自动加）。
 
 **数据文件**
 
@@ -87,7 +87,7 @@ DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
 ~/.dsh/offpeak-queue.json
 ```
 
-可用环境变量 `DSH_OFFPEAK_DATA_FILE` 指定其他路径（便于隔离测试）。卸载：设置 → 插件里禁用/移除，或 `"$DSH" plugin --profile <profile> remove dsh-offpeak-queue`。
+可用环境变量 `DSH_OFFPEAK_DATA_FILE` 指定其他路径（便于隔离测试）。卸载：设置 → 插件里禁用/移除，或 `"$DSH" plugin --profile <profile> remove @zayn_/dsh-offpeak-queue`。
 
 ## 使用
 
@@ -164,7 +164,7 @@ node --test
 
 ## English
 
-**dsh-offpeak-queue** is a DSH (DeepSeek Harness) plugin for people who have work that can wait.
+**@zayn_/dsh-offpeak-queue** is a DSH (DeepSeek Harness) plugin for people who have work that can wait.
 
 Each model family carries its own built-in off-peak rule: DeepSeek bills half price outside weekday 09:00–12:00 and 14:00–18:00 Beijing time (holidays excluded), and the GLM Coding Plan credits calls at 50% outside weekday 14:00–18:00 (UTC+8). A task is scheduled on the calendar of the model its conversation uses, so this plugin turns "I'll deal with it later" into a queue:
 

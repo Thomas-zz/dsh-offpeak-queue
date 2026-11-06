@@ -1,5 +1,5 @@
 {
-  "name": "dsh-offpeak-queue",
+  "name": "@zayn_/dsh-offpeak-queue",
   "version": "0.3.0",
   "type": "module",
   "description": "Off-peak task queue: type /闲时任务 in a conversation to queue a task without any model call; DSH runs it in the same conversation during each model's off-peak hours (DeepSeek half price, GLM Coding Plan half credits).",

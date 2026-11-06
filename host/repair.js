@@ -18,7 +18,7 @@
  * every event-to-event reference is remapped, and the previous file is kept as
  * a `.bak-<stamp>` sibling.
  *
- * @module dsh-offpeak-queue/host/repair
+ * @module @zayn_/dsh-offpeak-queue/host/repair
  */
 
 import fs from 'node:fs'
