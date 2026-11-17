@@ -251,6 +251,8 @@ window.__ModuleLoader__.load({
       'taskBar.aria': '闲时任务状态',
       'taskBar.expand': '展开任务详情',
       'taskBar.collapse': '收起任务详情',
+      'taskBar.showFull': '展开完整任务',
+      'taskBar.hideFull': '收起全文',
       'taskBar.draftConflict': '输入框已有内容，请先清空再修改任务',
 
       'armed.title': '待创建对话',
@@ -449,6 +451,8 @@ window.__ModuleLoader__.load({
       'taskBar.aria': 'Off-peak task status',
       'taskBar.expand': 'Show task details',
       'taskBar.collapse': 'Hide task details',
+      'taskBar.showFull': 'Show full task',
+      'taskBar.hideFull': 'Collapse full task',
       'taskBar.draftConflict': 'The composer already has a draft; clear it before editing the task',
 
       'armed.title': 'Conversations awaiting a task',
@@ -1696,7 +1700,10 @@ window.__ModuleLoader__.load({
       .dsh-oq-taskBarChevron{display:inline-flex;align-items:center;flex:none;margin-left:1px;color:var(--dsw-alias-label-secondary);transition:transform .14s ease}
       .dsh-oq-taskBar[data-expanded="true"] .dsh-oq-taskBarChevron{transform:rotate(180deg)}
       .dsh-oq-taskBarBody{display:flex;flex-direction:column;gap:7px;border-top:0.5px solid var(--dsw-alias-border-l1);padding:8px 10px 9px}
-      .dsh-oq-taskBarDesc{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+      .dsh-oq-taskBarDesc{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+      .dsh-oq-taskBarDesc[data-full="true"]{display:block;-webkit-line-clamp:unset;max-height:40vh;overflow-y:auto;overscroll-behavior:contain}
+      .dsh-oq-taskBarDesc:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px}
+      .dsh-oq-taskBarFullToggle{align-self:flex-start}
       .dsh-oq-taskBarActions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:4px}
       .dsh-oq-taskBarError{margin:0;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
       @keyframes dsh-oq-glyphPulse{0%,100%{opacity:.6}50%{opacity:1}}
@@ -1751,7 +1758,7 @@ window.__ModuleLoader__.load({
     // ────────────────────────────────────────────────────────────────────────
 
     /** Sidebar glyph: crescent moon + queue rows (inherits currentColor). */
-    function OffpeakIcon({ size }) {
+    function OffpeakIcon({ size, className, style }) {
       const edge = typeof size === 'number' ? size : 16
       return h(
         'svg',
@@ -1759,10 +1766,11 @@ window.__ModuleLoader__.load({
           viewBox: '0 0 24 24',
           width: edge,
           height: edge,
+          className,
           fill: 'none',
           'aria-hidden': 'true',
           focusable: 'false',
-          style: { display: 'block' },
+          style: { display: 'block', ...style },
         },
         h('path', {
           d: 'M13.4 3.6a8.1 8.1 0 1 0 6.4 12.6 6.6 6.6 0 0 1-6.4-12.6Z',
@@ -2229,6 +2237,43 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Four-line preview with an accessible, scrollable full-text disclosure. */
+    function TaskPrompt({ text, t }) {
+      const [full, setFull] = React.useState(false)
+      const [overflowing, setOverflowing] = React.useState(false)
+      const paragraph = React.useRef(null)
+      const contentId = React.useId()
+
+      React.useLayoutEffect(() => {
+        const node = paragraph.current
+        if (!node) return undefined
+        node.scrollTop = 0
+        if (full) return undefined
+        const measure = () => setOverflowing(node.scrollHeight > node.clientHeight + 1)
+        measure()
+        const observer = new ResizeObserver(measure)
+        observer.observe(node)
+        return () => observer.disconnect()
+      }, [text, full])
+
+      return h(React.Fragment, null,
+        h('p', {
+          ref: paragraph,
+          id: contentId,
+          className: 'dsh-oq-taskBarDesc',
+          'data-full': full ? 'true' : 'false',
+          tabIndex: full ? 0 : undefined,
+        }, text),
+        overflowing || full ? h('button', {
+          type: 'button',
+          className: 'dsh-oq-btn dsh-oq-btn--sm dsh-oq-btn--ghost dsh-oq-taskBarFullToggle',
+          'aria-expanded': full,
+          'aria-controls': contentId,
+          onClick: () => setFull((value) => !value),
+        }, full ? t('taskBar.hideFull') : t('taskBar.showFull')) : null,
+      )
+    }
+
     /**
      * Compact status bar above the composer for the task bound to this
      * conversation: created/waiting, running, cancelled or failed. Queued tasks
@@ -2316,9 +2361,8 @@ window.__ModuleLoader__.load({
       const more = tasks.length - 1
       const bodyId = 'dsh-oq-task-bar-body'
       const promptTrimmed = promptText.trim()
-      // The header already shows the title; repeat the prompt only when it adds
-      // information (a longer body the one-line header truncates).
-      const showDesc = promptTrimmed !== '' && promptTrimmed !== titleText
+      // Even when it equals the title, the prompt can be clipped by the header.
+      const showDesc = promptTrimmed !== ''
 
       const mutate = async (name, path, body) => {
         if (pending !== '') return
@@ -2435,7 +2479,7 @@ window.__ModuleLoader__.load({
           ? h(
               'div',
               { className: 'dsh-oq-taskBarBody', id: bodyId },
-              showDesc ? h('p', { className: 'dsh-oq-taskBarDesc', title: promptTrimmed }, promptTrimmed) : null,
+              showDesc ? h(TaskPrompt, { key: taskId, text: promptTrimmed, t }) : null,
               error ? h('p', { className: 'dsh-oq-taskBarError', role: 'status' }, error) : null,
               status === 'failed' && errorText !== '' ? h('p', { className: 'dsh-oq-taskBarError', role: 'status', title: errorText }, errorText) : null,
               actions.length > 0 ? h('div', { className: 'dsh-oq-taskBarActions' }, actions) : null,
@@ -4152,6 +4196,7 @@ window.__ModuleLoader__.load({
               name: COMMAND_NAME,
               label: () => t('command.label'),
               description: () => t('command.description'),
+              icon: OffpeakIcon,
               available: () => true,
               ui: {
                 kind: 'action',
