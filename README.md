@@ -48,11 +48,11 @@
 | | |
 |---|---|
 | **对话内排队** | 输入框输入 `/闲时任务` 回车开启，工具条出现「闲时任务 ×」小标签；写下任务回车即入队，**不产生模型回复**。 |
-| **面板管理** | 侧栏「闲时任务」面板：任务队列 / 统计两个页签，全部 / 等待 / 执行中 / 已完成 / 失败 / 已取消六个状态筛选。 |
+| **面板管理** | 侧栏「闲时任务」面板：任务队列 / 统计两个页签，全部 / 等待 / 执行中 / 已完成 / 失败 / 已取消六个状态筛选；「全部」按创建时间排列，取消或重试不会让任务换位置。 |
 | **多模型峰谷** | 标题下一排**等宽状态卡**，按已开启的模型分别展示 DeepSeek / GLM 的峰谷徽章、切换倒计时和下一闲时时段；「设置」按钮打开居中弹窗，可开关各模型的闲时任务、调节最大并发。 |
 | **分模型统计** | 统计页分模型卡片（DeepSeek 节省金额、GLM 估算积分）、按模型表格（含积分与 Token 列）、图表叠加运行次数、近期执行带模型标识。 |
 | **新建即排队** | 面板里选好工作区（下拉可搜索）点「新建闲时任务」，会在该工作区打开新对话并自动开启 `/闲时任务`。 |
-| **对话内状态卡** | 输入框上方一条与对话内容列同宽的状态卡：图标 + 状态 + 标题 + 时间；可展开查看详情、**修改**、取消、重新入队、删除。 |
+| **对话内状态卡** | 输入框上方一条与对话内容列同宽的状态卡：图标 + 状态 + 标题 + 时间；可展开查看详情、**修改**、取消、重新入队、删除。一个对话里提交了多个任务时，展开是这个对话的**任务列表**，按提交顺序排列，每行有自己的操作，取消只改那一行。 |
 | **修改零调用** | 点「修改」把任务内容回填到输入框，像聊天一样改（可贴图），回车保存；执行时用最新版本。 |
 | **立即执行** | 任务行的「立即执行」任何时段都能手动跑（高峰会按全价计费并提示）。 |
 | **完成提醒** | 任务完成时面板入口出现绿色小点，不弹横幅、不打扰。 |
@@ -94,8 +94,9 @@ DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
 1. 在任意对话输入框输入 `/闲时任务`（或从 `/` 指令菜单选「闲时任务」）回车开启。
 2. 工具条出现「闲时任务 ×」标签；写下任务描述回车，任务入队且**不会产生模型回复**。还没有标题的对话（比如刚新开的）会以任务标题命名（不加任何前缀，侧栏用月亮图标标记闲时会话）；已有标题的对话保持原标题，不会被任务改掉。
 3. 输入框上方的状态卡可以展开查看详情、**修改**、**取消**；长任务默认预览四行，点击「展开完整任务」可滚动查看全文，再点「收起全文」返回预览。面板里也能操作。
-4. 到闲时（半价时段）任务在同一条对话里自动执行，对话中出现一张「插件状态更新」触发卡（不是冒充用户发出的消息）。
-5. 侧栏「闲时任务」面板查看队列和省钱统计；面板图标上的绿点表示有任务完成且未查看，点任务标题可跳到来源对话。
+4. 同一个对话里可以接着再提交多个任务（重复第 1、2 步）。状态卡这时显示「闲时任务 · N 个排队」，展开是这个对话的任务列表，按提交顺序排列，每一行都能单独**修改**、取消（点标题看任务全文）。取消只把那一行变成「已取消」，其他行不动，可以挨个处理；全部处理完后逐行点 × 收起。
+5. 到闲时（半价时段）任务在同一条对话里自动执行，对话中出现一张「插件状态更新」触发卡（不是冒充用户发出的消息）。
+6. 侧栏「闲时任务」面板查看队列和省钱统计；面板图标上的绿点表示有任务完成且未查看，点任务标题可跳到来源对话。
 
 ![输入框里的闲时任务标签](docs/screenshots/composer.png)
 
@@ -169,7 +170,7 @@ node --test
 Each model family carries its own built-in off-peak rule: DeepSeek bills half price outside weekday 09:00–12:00 and 14:00–18:00 Beijing time (holidays excluded), and the GLM Coding Plan credits calls at 50% outside weekday 14:00–18:00 (UTC+8). A task is scheduled on the calendar of the model its conversation uses, so this plugin turns "I'll deal with it later" into a queue:
 
 1. In any conversation type `/闲时任务` — this only *arms* the composer; it makes **no model call**. Write the task and press Enter: the Host intercepts it in `agent/pre-step`, stores it, and ends the turn at zero cost. A conversation that has no title yet is named after the task; one that already has a title keeps it.
-2. The task appears as a one-line status card above the composer, in the sidebar queue and in the queue panel. You can edit it (also at zero cost), cancel it, retry it, or run it immediately.
+2. The task appears as a one-line status card above the composer, in the sidebar queue and in the queue panel. You can edit it (also at zero cost), cancel it, retry it, or run it immediately. A conversation can hold several tasks: the card then counts them (“闲时任务 · 3 个排队”) and expanding it lists them in the order they were submitted, each row with its own actions, so cancelling one leaves the others where they are.
 3. During that model's off-peak hours the scheduler runs the task **in the same conversation**, waking the agent with a plugin status card that carries the task text and images. Savings are estimated per family — DeepSeek in CNY from the official price table, GLM in Coding-Plan credits from the official coefficients × measured tokens (no network calls) — and reported in the stats tab.
 
 Requirements: DSH desktop/web; install with `dsh plugin --profile <profile> add <repo-dir>` and restart DSH. Data stays local in `~/.dsh/offpeak-queue.json`; the plugin itself makes no network calls. License: MIT.

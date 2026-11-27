@@ -25,4 +25,5 @@ if (!entry.endsWith('.js') && !entry.endsWith('.mjs') && !entry.endsWith('.cjs')
   await import('./engine.test.mjs')
   await import('./routes.test.mjs')
   await import('./tool.test.mjs')
+  await import('./client.test.mjs')
 }

@@ -165,6 +165,12 @@ window.__ModuleLoader__.load({
     /** Task statuses that keep a session marked as active in the sidebar. */
     const ACTIVE_STATUSES = ['queued', 'running']
 
+    /** Task statuses the conversation task bar asks the user to look at. */
+    const ATTENTION_STATUSES = ['cancelled', 'failed']
+
+    /** Separator between the parts of a task bar head. */
+    const HEAD_SEP = ' · '
+
     /** Simplified Chinese dictionary (key-set source of truth). */
     const zh = {
       'panel': '闲时任务',
@@ -246,7 +252,14 @@ window.__ModuleLoader__.load({
       'taskBar.delete': '删除',
       'taskBar.confirmDelete': '确认删除',
       'taskBar.dismiss': '关闭提示',
-      'taskBar.more': '+{n}',
+      'taskBar.summary': '闲时任务',
+      'taskBar.count.running': '{n} 个执行中',
+      'taskBar.count.queued': '{n} 个排队',
+      'taskBar.count.failed': '{n} 个失败',
+      'taskBar.count.cancelled': '{n} 个已取消',
+      'taskBar.listAria': '本对话的闲时任务',
+      'taskBar.showTask': '展开任务全文',
+      'taskBar.hideTask': '收起任务全文',
       'taskBar.pending': '处理中…',
       'taskBar.aria': '闲时任务状态',
       'taskBar.expand': '展开任务详情',
@@ -282,6 +295,7 @@ window.__ModuleLoader__.load({
       'row.waitingManual': '等待手动执行',
       'row.runningFor': '已运行 {duration}',
       'row.finishedAt': '完成于 {time}',
+      'row.failedAt': '失败于 {time}',
       'row.cancelledAt': '取消于 {time}',
       'row.saved': '约省 {amount}',
       'row.pointsSaved': '闲时省 {points} 积分',
@@ -446,7 +460,14 @@ window.__ModuleLoader__.load({
       'taskBar.delete': 'Delete',
       'taskBar.confirmDelete': 'Confirm delete',
       'taskBar.dismiss': 'Dismiss',
-      'taskBar.more': '+{n} more tasks',
+      'taskBar.summary': 'Off-peak tasks',
+      'taskBar.count.running': '{n} running',
+      'taskBar.count.queued': '{n} queued',
+      'taskBar.count.failed': '{n} failed',
+      'taskBar.count.cancelled': '{n} cancelled',
+      'taskBar.listAria': 'Off-peak tasks in this conversation',
+      'taskBar.showTask': 'Show the full task',
+      'taskBar.hideTask': 'Hide the full task',
       'taskBar.pending': 'Working…',
       'taskBar.aria': 'Off-peak task status',
       'taskBar.expand': 'Show task details',
@@ -482,6 +503,7 @@ window.__ModuleLoader__.load({
       'row.waitingManual': 'Waiting to run manually',
       'row.runningFor': 'Running for {duration}',
       'row.finishedAt': 'Finished {time}',
+      'row.failedAt': 'Failed {time}',
       'row.cancelledAt': 'Cancelled {time}',
       'row.saved': 'Saved ~{amount}',
       'row.pointsSaved': '{points} credits saved off-peak',
@@ -845,6 +867,51 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The status the conversation task bar shows for one task: queued, running
+     * or an attention status. Anything else (a completed task, an unknown
+     * value) reads as queued.
+     *
+     * @param {object} task - snapshot task.
+     * @returns {string} bar status.
+     */
+    function barStatusOf(task) {
+      const status = pick(task, 'status')
+      return isActiveTask(task) || ATTENTION_STATUSES.includes(status) ? status : 'queued'
+    }
+
+    /**
+     * Title shown for a task: its own title, else the first line of its prompt,
+     * else an empty string.
+     *
+     * @param {object} task - snapshot task.
+     * @returns {string} title.
+     */
+    function taskTitleOf(task) {
+      const value = pick(task, 'title')
+      if (typeof value === 'string' && value.trim()) return value.trim()
+      const prompt = pick(task, 'prompt')
+      return typeof prompt === 'string' && prompt.trim() ? prompt.trim().split('\n')[0].slice(0, 80) : ''
+    }
+
+    /**
+     * Head label for a conversation that holds several tasks: the task label
+     * followed by how many sit in each status, in a fixed status order, e.g.
+     * 「闲时任务 · 2 个排队 · 1 个已取消」.
+     *
+     * @param {object[]} tasks - the conversation's tasks.
+     * @param {Function} t - translate.
+     * @returns {string} head label.
+     */
+    function taskBarSummary(tasks, t) {
+      const parts = [t('taskBar.summary')]
+      for (const status of ['running', 'queued', 'failed', 'cancelled']) {
+        const count = tasks.filter((task) => barStatusOf(task) === status).length
+        if (count > 0) parts.push(t(`taskBar.count.${status}`, { n: count }))
+      }
+      return parts.join(HEAD_SEP)
+    }
+
+    /**
      * Timing phrase for one task: expected start, running duration, or finish time.
      *
      * @param {object} task - snapshot task.
@@ -878,7 +945,12 @@ window.__ModuleLoader__.load({
       if (typeof finishedAt === 'number' && Number.isFinite(finishedAt)) {
         const time = formatWhen(finishedAt, t, zone, now)
         return {
-          text: status === 'cancelled' ? t('row.cancelledAt', { time }) : t('row.finishedAt', { time }),
+          text:
+            status === 'cancelled'
+              ? t('row.cancelledAt', { time })
+              : status === 'failed'
+                ? t('row.failedAt', { time })
+                : t('row.finishedAt', { time }),
           strong: true,
         }
       }
@@ -1706,6 +1778,24 @@ window.__ModuleLoader__.load({
       .dsh-oq-taskBarFullToggle{align-self:flex-start}
       .dsh-oq-taskBarActions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:4px}
       .dsh-oq-taskBarError{margin:0;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
+      /* A conversation that holds several tasks lists them when expanded. */
+      .dsh-oq-taskBarText--grow{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .dsh-oq-taskBarRows{display:flex;flex-direction:column;margin:0;border-top:0.5px solid var(--dsw-alias-border-l1);padding:8px 10px 9px;list-style:none}
+      .dsh-oq-taskBarRow{display:flex;flex-direction:column;gap:6px;padding:7px 0}
+      .dsh-oq-taskBarRow:first-child{padding-top:0}
+      .dsh-oq-taskBarRow:last-child{padding-bottom:0}
+      .dsh-oq-taskBarRow + .dsh-oq-taskBarRow{border-top:0.5px solid var(--dsw-alias-border-l1)}
+      .dsh-oq-taskBarRowMain{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-width:0}
+      /* The title keeps a fair share of the line: when the row is too narrow the timing and chevron wrap below it instead of squeezing the title to nothing. */
+      .dsh-oq-taskBarRowToggle{display:flex;flex:1 1 260px;flex-wrap:wrap;align-items:center;gap:2px 6px;min-width:0;margin-left:-4px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;padding:2px 4px;cursor:pointer}
+      .dsh-oq-taskBarRowToggle:hover{background:var(--dsw-alias-interactive-bg-hover)}
+      .dsh-oq-taskBarRowToggle:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px}
+      .dsh-oq-taskBarRow .dsh-oq-badge{margin-top:0}
+      .dsh-oq-taskBarRowTitle{flex:1 1 120px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}
+      .dsh-oq-taskBarRowChevron{display:inline-flex;align-items:center;flex:none;color:var(--dsw-alias-label-secondary);transition:transform .14s ease}
+      .dsh-oq-taskBarRowToggle[aria-expanded="true"] .dsh-oq-taskBarRowChevron{transform:rotate(180deg)}
+      .dsh-oq-taskBarRowActions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:4px;flex:none;margin-left:auto}
+      .dsh-oq-taskBarRowFull{padding-left:2px}
       @keyframes dsh-oq-glyphPulse{0%,100%{opacity:.6}50%{opacity:1}}
 
       .dsh-oq-createBar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 12px;box-sizing:border-box;margin-top:16px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1)}
@@ -2275,11 +2365,139 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Compact status bar above the composer for the task bound to this
-     * conversation: created/waiting, running, cancelled or failed. Queued tasks
-     * can be edited or cancelled here; cancelled/failed tasks can be retried,
-     * deleted or dismissed, so a panel-side cancel is visible in the
-     * conversation too.
+     * One task of a conversation that holds several: status, family, the task's
+     * title (click for its full text), timing and the actions valid for its own
+     * status. The bar owns the requests and the composer; the row only reports.
+     *
+     * @param {{ task: object, data: object, t: Function, now: number, onAction: Function, onEdit: Function, onDismiss: Function }} props - row props.
+     * @returns {import('react').ReactElement} row.
+     */
+    function TaskBarRow({ task, data, t, now, onAction, onEdit, onDismiss }) {
+      const taskId = String(pick(task, 'id'))
+      const status = barStatusOf(task)
+      const [pending, setPending] = React.useState('')
+      const [error, setError] = React.useState('')
+      const [confirmDelete, setConfirmDelete] = React.useState(false)
+      const [showFull, setShowFull] = React.useState(false)
+
+      React.useEffect(() => {
+        if (!confirmDelete) return undefined
+        const timer = setTimeout(() => setConfirmDelete(false), CONFIRM_MS)
+        return () => clearTimeout(timer)
+      }, [confirmDelete])
+
+      const titleText = taskTitleOf(task)
+      const promptText = typeof pick(task, 'prompt') === 'string' ? task.prompt : ''
+      const errorText = typeof pick(task, 'error') === 'string' ? task.error : ''
+      // Same as the head of a single-task bar: a running task shows its clock.
+      const timing = timingOfTask(task, data, t, now)
+      const metaText = status === 'running' ? formatClock(now - numberOr(pick(task, 'startedAt'), now)) : timing.text
+
+      const act = async (name) => {
+        if (pending !== '') return
+        setPending(name)
+        setError('')
+        setConfirmDelete(false)
+        const message = await onAction(name, task)
+        if (message !== null) setError(message)
+        setPending('')
+      }
+
+      const edit = async () => {
+        if (pending !== '') return
+        setPending('edit')
+        setError('')
+        const message = await onEdit(task)
+        if (message !== null) setError(message)
+        setPending('')
+      }
+
+      const button = (key, labelText, onClick, options = {}) =>
+        h(
+          'button',
+          {
+            key,
+            type: 'button',
+            className: `dsh-oq-btn dsh-oq-btn--sm ${options.className || 'dsh-oq-btn--ghost'}`.trim(),
+            onClick,
+            disabled: pending !== '',
+            title: options.title,
+            'aria-label': options.ariaLabel,
+          },
+          pending === key ? t('taskBar.pending') : labelText,
+        )
+
+      const actions = []
+      if (status === 'queued') {
+        actions.push(button('edit', t('taskBar.edit'), () => void edit()))
+        actions.push(button('cancel', t('taskBar.cancel'), () => void act('cancel')))
+      } else if (status === 'running') {
+        actions.push(button('cancel', t('taskBar.cancel'), () => void act('cancel')))
+      } else if (ATTENTION_STATUSES.includes(status)) {
+        actions.push(button('retry', t('taskBar.retry'), () => void act('retry')))
+        actions.push(
+          button(
+            'delete',
+            confirmDelete ? t('taskBar.confirmDelete') : t('taskBar.delete'),
+            () => {
+              if (!confirmDelete) {
+                setConfirmDelete(true)
+                return
+              }
+              void act('delete')
+            },
+            { className: confirmDelete ? 'dsh-oq-btn--dangerArmed' : 'dsh-oq-btn--danger', title: confirmDelete ? t('row.confirmHint') : undefined },
+          ),
+        )
+        actions.push(
+          button('dismiss', '×', () => onDismiss(taskId), {
+            className: 'dsh-oq-btn--ghost dsh-oq-btn--icon',
+            title: t('taskBar.dismiss'),
+            ariaLabel: t('taskBar.dismiss'),
+          }),
+        )
+      }
+
+      const promptTrimmed = promptText.trim()
+      return h(
+        'li',
+        { className: 'dsh-oq-taskBarRow', 'data-status': status, 'aria-busy': pending !== '' ? 'true' : undefined },
+        h(
+          'div',
+          { className: 'dsh-oq-taskBarRowMain' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dsh-oq-taskBarRowToggle',
+              'aria-expanded': showFull ? 'true' : 'false',
+              title: showFull ? t('taskBar.hideTask') : t('taskBar.showTask'),
+              onClick: () => setShowFull((open) => !open),
+            },
+            h('span', { className: 'dsh-oq-badge', 'data-status': status }, statusLabel(t, status)),
+            h('span', { className: 'dsh-oq-familyTag' }, familyLabelOf(familyOfTask(task), t)),
+            h('span', { className: 'dsh-oq-taskBarRowTitle' }, titleText),
+            metaText !== '' ? h('span', { className: 'dsh-oq-taskBarMeta' }, metaText) : null,
+            h('span', { className: 'dsh-oq-taskBarRowChevron' }, h(ChevronIcon, { size: 14 })),
+          ),
+          actions.length > 0 ? h('div', { className: 'dsh-oq-taskBarRowActions' }, actions) : null,
+        ),
+        showFull && promptTrimmed !== ''
+          ? h('div', { className: 'dsh-oq-taskBarRowFull' }, h(TaskPrompt, { key: taskId, text: promptTrimmed, t }))
+          : null,
+        status === 'failed' && errorText !== '' ? h('p', { className: 'dsh-oq-taskBarError', role: 'status', title: errorText }, errorText) : null,
+        error ? h('p', { className: 'dsh-oq-taskBarError', role: 'status' }, error) : null,
+      )
+    }
+
+    /**
+     * Compact status bar above the composer for the off-peak tasks bound to this
+     * conversation. With one task it is that task's single line (status, title,
+     * timing) opening its text and actions. A conversation that holds several
+     * gets a list on expand, in submission order, where every row carries the
+     * actions valid for its own status: a row keeps its place when it is
+     * cancelled, fails or is queued again, so working through the list never
+     * moves the tasks still to do. A panel-side cancel is visible here too.
      *
      * @param {{ store: object, t: Function, sessionId: string }} props - bar props.
      * @returns {import('react').ReactElement|null} bar or null.
@@ -2293,6 +2511,8 @@ window.__ModuleLoader__.load({
       const [confirmDelete, setConfirmDelete] = React.useState(false)
       const [dismissed, setDismissed] = React.useState(() => dismissedTaskIds())
       const [expanded, setExpanded] = React.useState(false)
+      const seenAttention = React.useRef(null)
+      const wasList = React.useRef(false)
 
       React.useEffect(() => {
         if (!confirmDelete) return undefined
@@ -2309,40 +2529,43 @@ window.__ModuleLoader__.load({
         return store.retainFast()
       }, [store, snapshot.data, sessionId])
 
+      // Queued and running tasks plus the cancelled/failed ones not dismissed
+      // yet, in submission order. The order depends on no status, so a task
+      // that changes state keeps its place in the list.
       const tasks = data ? listOf(pick(data, 'tasks')).filter((task) => pick(task, 'sourceSessionId') === sessionId) : []
-      const live = tasks
-        .filter((task) => isActiveTask(task))
-        .sort((left, right) => {
-          const rank = (task) => (pick(task, 'status') === 'running' ? 0 : 1)
-          return rank(left) - rank(right) || numberOr(pick(left, 'order'), 0) - numberOr(pick(right, 'order'), 0)
-        })
-      let selected = live[0]
-      if (selected === undefined) {
-        const latest = tasks
-          .filter((entry) => {
-            const status = pick(entry, 'status')
-            return status === 'cancelled' || status === 'failed'
-          })
-          .sort((left, right) => numberOr(pick(right, 'updatedAt'), 0) - numberOr(pick(left, 'updatedAt'), 0))
-        selected = latest.find((entry) => !dismissed.includes(String(pick(entry, 'id'))))
-      }
-      const taskId = selected === undefined ? '' : String(pick(selected, 'id'))
-      const status = selected && ['queued', 'running', 'cancelled', 'failed'].includes(pick(selected, 'status')) ? selected.status : 'queued'
+      const rows = tasks
+        .filter(
+          (task) => isActiveTask(task) || (ATTENTION_STATUSES.includes(barStatusOf(task)) && !dismissed.includes(String(pick(task, 'id')))),
+        )
+        .sort(
+          (left, right) =>
+            numberOr(pick(left, 'createdAt'), 0) - numberOr(pick(right, 'createdAt'), 0) ||
+            String(pick(left, 'id')).localeCompare(String(pick(right, 'id'))),
+        )
+      const listed = rows.length >= 2
+      const task = rows[0]
+      const taskId = task === undefined ? '' : String(pick(task, 'id'))
+      const status = task === undefined ? 'queued' : barStatusOf(task)
+      const attentionKey = rows.filter((entry) => ATTENTION_STATUSES.includes(barStatusOf(entry))).map((entry) => String(pick(entry, 'id'))).join(',')
 
-      // A cancelled/failed task opens its detail + actions by default; a live
-      // task stays a single compact line until the user asks for more.
+      // A cancelled or failed task opens its detail + actions by default; a
+      // live task stays a single compact line until the user asks for more.
+      // A list opens when a task newly needs attention and otherwise leaves
+      // the user's choice alone, so cancelling row by row never closes it.
       React.useEffect(() => {
-        setExpanded(status === 'cancelled' || status === 'failed')
-      }, [taskId, status])
+        const ids = attentionKey === '' ? [] : attentionKey.split(',')
+        const known = seenAttention.current
+        seenAttention.current = ids
+        if (listed) {
+          if (ids.length > 0 && (known === null || ids.some((id) => !known.includes(id)))) setExpanded(true)
+        } else if (!wasList.current) {
+          setExpanded(ATTENTION_STATUSES.includes(status))
+        }
+        wasList.current = listed
+      }, [listed, attentionKey, taskId, status])
 
-      if (!data || selected === undefined) return null
-      const task = selected
-      const titleText = (() => {
-        const value = pick(task, 'title')
-        if (typeof value === 'string' && value.trim()) return value.trim()
-        const prompt = pick(task, 'prompt')
-        return typeof prompt === 'string' && prompt.trim() ? prompt.trim().split('\n')[0].slice(0, 80) : ''
-      })()
+      if (!data || task === undefined) return null
+      const titleText = taskTitleOf(task)
       const promptText = typeof pick(task, 'prompt') === 'string' ? task.prompt : ''
       const errorText = typeof pick(task, 'error') === 'string' ? task.error : ''
       const timing = timingOfTask(task, data, t, now)
@@ -2358,21 +2581,45 @@ window.__ModuleLoader__.load({
             : status === 'cancelled'
               ? t('taskBar.cancelled')
               : t('taskBar.failed')
-      const more = tasks.length - 1
       const bodyId = 'dsh-oq-task-bar-body'
       const promptTrimmed = promptText.trim()
       // Even when it equals the title, the prompt can be clipped by the header.
       const showDesc = promptTrimmed !== ''
 
-      const mutate = async (name, path, body) => {
-        if (pending !== '') return
-        setPending(name)
-        setError('')
-        setConfirmDelete(false)
+      // The head of a list summarises its rows and says when the first queued
+      // task is due, or how long the first running one has been running.
+      const headLabel = taskBarSummary(rows, t)
+      const firstBy = (barStatus, field) =>
+        rows
+          .filter((entry) => barStatusOf(entry) === barStatus)
+          .sort((left, right) => numberOr(pick(left, field), 0) - numberOr(pick(right, field), 0))[0]
+      const nextQueued = firstBy('queued', 'nextRunAt')
+      const firstRunning = firstBy('running', 'startedAt')
+      const headMeta =
+        nextQueued !== undefined
+          ? timingOfTask(nextQueued, data, t, now).text
+          : firstRunning !== undefined
+            ? formatClock(now - numberOr(pick(firstRunning, 'startedAt'), now))
+            : ''
+      // The glyph follows the most urgent row: running pulses, failed turns red.
+      const barStatus = !listed
+        ? status
+        : rows.some((entry) => barStatusOf(entry) === 'running')
+          ? 'running'
+          : rows.some((entry) => barStatusOf(entry) === 'failed')
+            ? 'failed'
+            : rows.some((entry) => barStatusOf(entry) === 'queued')
+              ? 'queued'
+              : 'cancelled'
+
+      /** Run one task action; resolves to its error message, or null when it went through. */
+      const runAction = async (name, target) => {
         try {
-          await store.mutate(path, body === undefined ? {} : body)
-          if (name === 'retry') {
-            const next = dismissed.filter((entry) => entry !== taskId)
+          await store.mutate(taskPath(target, name), {})
+          // A task queued again is worth seeing again, so it leaves the dismissed list.
+          const targetId = String(pick(target, 'id'))
+          if (name === 'retry' && dismissed.includes(targetId)) {
+            const next = dismissed.filter((entry) => entry !== targetId)
             setDismissed(next)
             try {
               window.localStorage.setItem(DISMISSED_KEY, JSON.stringify(next))
@@ -2380,38 +2627,55 @@ window.__ModuleLoader__.load({
               /* ignored */
             }
           }
+          return null
         } catch (reason) {
-          setError(messageOf(reason))
-        } finally {
-          setPending('')
+          return messageOf(reason)
         }
       }
 
       // Editing returns to the composer: the queued task is re-armed as an
       // update target and its text is put back into the draft, so the user can
       // rewrite it (and attach images) exactly like a normal chat message.
-      const startEdit = async () => {
-        if (pending !== '' || typeof onEditTask !== 'function') return
+      // Resolves to an error message, or null when nothing has to be reported.
+      const runEdit = async (target) => {
+        if (typeof onEditTask !== 'function') return null
+        const prompt = typeof pick(target, 'prompt') === 'string' ? target.prompt : ''
         const draft = input && typeof input.draft === 'string' ? input.draft : ''
         if (draft.trim() !== '') {
           toasts.push('warn', t('taskBar.draftConflict'))
-          return
+          return null
         }
-        setPending('edit')
-        setError('')
         try {
-          await onEditTask(task)
-          if (inputActions && typeof inputActions.setDraft === 'function') inputActions.setDraft(promptText)
+          await onEditTask(target)
+          if (inputActions && typeof inputActions.setDraft === 'function') inputActions.setDraft(prompt)
+          return null
         } catch (reason) {
-          setError(messageOf(reason))
-        } finally {
-          setPending('')
+          return messageOf(reason)
         }
       }
 
-      const dismiss = () => {
-        dismissTaskId(taskId)
-        setDismissed([...dismissed, taskId])
+      const mutate = async (name) => {
+        if (pending !== '') return
+        setPending(name)
+        setError('')
+        setConfirmDelete(false)
+        const message = await runAction(name, task)
+        if (message !== null) setError(message)
+        setPending('')
+      }
+
+      const startEdit = async () => {
+        if (pending !== '') return
+        setPending('edit')
+        setError('')
+        const message = await runEdit(task)
+        if (message !== null) setError(message)
+        setPending('')
+      }
+
+      const dismiss = (id) => {
+        dismissTaskId(id)
+        setDismissed([...dismissed, id])
       }
 
       const button = (key, labelText, onClick, options = {}) =>
@@ -2432,11 +2696,11 @@ window.__ModuleLoader__.load({
       const actions = []
       if (status === 'queued') {
         actions.push(button('edit', t('taskBar.edit'), () => void startEdit(), { pendingKey: 'edit' }))
-        actions.push(button('cancel', t('taskBar.cancel'), () => void mutate('cancel', taskPath(task, 'cancel'))))
+        actions.push(button('cancel', t('taskBar.cancel'), () => void mutate('cancel')))
       } else if (status === 'running') {
-        actions.push(button('cancel', t('taskBar.cancel'), () => void mutate('cancel', taskPath(task, 'cancel'))))
+        actions.push(button('cancel', t('taskBar.cancel'), () => void mutate('cancel')))
       } else if (status === 'cancelled' || status === 'failed') {
-        actions.push(button('retry', t('taskBar.retry'), () => void mutate('retry', taskPath(task, 'retry')), { pendingKey: 'retry' }))
+        actions.push(button('retry', t('taskBar.retry'), () => void mutate('retry'), { pendingKey: 'retry' }))
         actions.push(
           button(
             'delete',
@@ -2446,17 +2710,17 @@ window.__ModuleLoader__.load({
                 setConfirmDelete(true)
                 return
               }
-              void mutate('delete', taskPath(task, 'delete'))
+              void mutate('delete')
             },
             { className: confirmDelete ? 'dsh-oq-btn--dangerArmed' : 'dsh-oq-btn--danger', title: confirmDelete ? t('row.confirmHint') : undefined },
           ),
         )
-        actions.push(button('dismiss', '×', dismiss, { className: 'dsh-oq-btn--ghost dsh-oq-btn--icon', title: t('taskBar.dismiss'), ariaLabel: t('taskBar.dismiss') }))
+        actions.push(button('dismiss', '×', () => dismiss(taskId), { className: 'dsh-oq-btn--ghost dsh-oq-btn--icon', title: t('taskBar.dismiss'), ariaLabel: t('taskBar.dismiss') }))
       }
 
       return h(
         'div',
-        { className: 'dsh-oq-taskBar', 'data-status': status, 'data-expanded': expanded ? 'true' : 'false', role: 'group', 'aria-label': t('taskBar.aria') },
+        { className: 'dsh-oq-taskBar', 'data-status': barStatus, 'data-expanded': expanded ? 'true' : 'false', role: 'group', 'aria-label': t('taskBar.aria') },
         h(
           'button',
           {
@@ -2468,14 +2732,33 @@ window.__ModuleLoader__.load({
             onClick: () => setExpanded((open) => !open),
           },
           h('span', { className: 'dsh-oq-taskBarGlyph', 'aria-hidden': 'true' }, h(OffpeakIcon, { size: 13 })),
-          h('span', { className: 'dsh-oq-taskBarText' }, label),
-          h('span', { className: 'dsh-oq-familyTag' }, familyLabelOf(familyOfTask(task), t)),
-          titleText ? h('span', { className: 'dsh-oq-taskBarTitle' }, titleText) : null,
-          metaText !== '' ? h('span', { className: 'dsh-oq-taskBarMeta' }, metaText) : null,
-          more > 0 ? h('span', { className: 'dsh-oq-taskBarMeta' }, t('taskBar.more', { n: more })) : null,
+          listed
+            ? h('span', { className: 'dsh-oq-taskBarText dsh-oq-taskBarText--grow' }, headLabel)
+            : h('span', { className: 'dsh-oq-taskBarText' }, label),
+          listed ? null : h('span', { className: 'dsh-oq-familyTag' }, familyLabelOf(familyOfTask(task), t)),
+          listed || !titleText ? null : h('span', { className: 'dsh-oq-taskBarTitle' }, titleText),
+          (listed ? headMeta : metaText) !== '' ? h('span', { className: 'dsh-oq-taskBarMeta' }, listed ? headMeta : metaText) : null,
           h('span', { className: 'dsh-oq-taskBarChevron' }, h(ChevronIcon, { size: 14 })),
         ),
-        expanded
+        expanded && listed
+          ? h(
+              'ul',
+              { className: 'dsh-oq-taskBarRows', id: bodyId, 'aria-label': t('taskBar.listAria') },
+              rows.map((entry) =>
+                h(TaskBarRow, {
+                  key: String(pick(entry, 'id')),
+                  task: entry,
+                  data,
+                  t,
+                  now,
+                  onAction: runAction,
+                  onEdit: runEdit,
+                  onDismiss: dismiss,
+                }),
+              ),
+            )
+          : null,
+        expanded && !listed
           ? h(
               'div',
               { className: 'dsh-oq-taskBarBody', id: bodyId },
@@ -3589,9 +3872,16 @@ window.__ModuleLoader__.load({
       ]
       const statusOrder = (task) => numberOr(pick(task, 'order'), 0)
       const statusTime = (task) => numberOr(pick(task, 'updatedAt'), 0)
+      // "全部" is the whole queue by creation time, newest first. Creation time
+      // never changes, so cancelling or retrying a row leaves every row where
+      // it was (by last update a just-cancelled task jumped above the ones
+      // still waiting, under the pointer of whoever was cancelling down the list).
+      const createdTime = (task) => numberOr(pick(task, 'createdAt'), 0)
       const filtered = (() => {
         if (statusTab === 'all') {
-          return [...tasks].sort((left, right) => statusTime(right) - statusTime(left))
+          return [...tasks].sort(
+            (left, right) => createdTime(right) - createdTime(left) || String(pick(right, 'id')).localeCompare(String(pick(left, 'id'))),
+          )
         }
         if (statusTab === 'cancelled') {
           return tasks.filter((task) => pick(task, 'status') === 'cancelled').sort((left, right) => statusTime(right) - statusTime(left))

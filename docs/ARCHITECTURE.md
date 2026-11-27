@@ -17,6 +17,28 @@ not published.
 > (`source.kind = 'cordis-host-runner'`), so the Host derives no title from it.
 > No settings or data-format change.
 
+> **Task list (2026-11-27):** a conversation can hold several tasks, and the
+> task bar used to show only the first one (a bare `+N` for the rest), then
+> switch to the next task and collapse after every cancel, and bring an older
+> cancelled task back each time the current one was dismissed. With two or more
+> tasks in the conversation the bar is now a **list**: its head counts the rows
+> by status (`闲时任务 · 2 个排队 · 1 个已取消`, plus when the first queued task
+> is due), and the expanded body lists every queued/running task and every
+> cancelled/failed one not dismissed yet — **in submission order** (`createdAt`),
+> which depends on no status, so a row keeps its place when it is cancelled,
+> fails or is queued again. Each row (`TaskBarRow`) carries the actions valid
+> for its own status and opens the task's full text on click; `×` dismisses that
+> row only. With a single task the bar is unchanged. The list opens by itself
+> when a task **newly** needs attention (a cancelled/failed id not seen before)
+> and otherwise keeps the user's choice, so cancelling row by row never closes
+> it; the root `data-status` follows the most urgent row (running > failed >
+> queued > cancelled). The same rule applies to the panel's 「全部」 tab: it is
+> ordered by creation time, newest first, instead of by last update, which
+> jumped a just-cancelled task above the ones still waiting. A failed task now
+> reads 「失败于 {time}」 (it said 「完成于」). `test/client.test.mjs` runs the
+> bundle against a fake loader and a small React stand-in to pin all of this,
+> together with the dictionary parity and the `t()` key coverage. No Host change.
+
 > **Multi-family update (v7, 2026-11-06):** the queue now schedules per **model
 > family** — DeepSeek (calendar from the persisted settings) and GLM (built-in
 > Coding Plan rule, `host/families.js`). `agent/pre-step` classifies the
