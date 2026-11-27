@@ -4,7 +4,8 @@
  * A conversation armed through `POST /sessions/:id/arm` is a pending off-peak
  * task creation session: the user types the task description and presses
  * Enter, and this global `agent/pre-step` listener claims that message as the
- * task, disarms the session, renames the conversation, and answers
+ * task, disarms the session, names the conversation after the task when it has
+ * no title yet (a conversation that already has one keeps it), and answers
  * `{kind:'reject'}`. The Agent loop then closes the turn as `blocked` with
  * **no model request** (`turn/start` was already appended, so the session is
  * non-blank and visible in its workspace).
@@ -148,7 +149,26 @@ export function createPrestep(options) {
   }
 
   /**
-   * Rename the creation conversation to the task's own title. Best effort: a
+   * Whether the conversation already carries a title, whichever way it got
+   * one: typed by the user, inherited from a fork, or derived by the Host from
+   * an earlier message. The title service folds the session log, so this is
+   * the same title the sidebar shows. A service that cannot answer counts as
+   * "titled": an existing title must never be put at risk.
+   *
+   * @param {object} titles - Host `sessionTitle` service.
+   * @param {object} session - live session.
+   * @returns {boolean} true when the title must be kept.
+   */
+  function sessionHasTitle(titles, session) {
+    if (typeof titles.get !== 'function') return true
+    const snapshot = titles.get(session)
+    return typeof snapshot?.title === 'string' && snapshot.title !== ''
+  }
+
+  /**
+   * Name the creation conversation after the task's own title — only while the
+   * conversation has none. One that already carries a title keeps it: queuing
+   * a task inside an ongoing conversation must not relabel it. Best effort: a
    * title failure never fails the creation. No prefix is added — the sidebar
    * already marks off-peak sessions with the moon icon.
    *
@@ -160,6 +180,7 @@ export function createPrestep(options) {
     try {
       const titles = ctx.get('sessionTitle')
       if (titles === undefined || typeof titles.rename !== 'function') return
+      if (sessionHasTitle(titles, session)) return
       const short = String(title).length > RENAME_TITLE_CHARS
         ? `${String(title).slice(0, RENAME_TITLE_CHARS - 1)}…`
         : String(title)
@@ -283,9 +304,10 @@ export function createPrestep(options) {
       return next()
     }
 
-    // Success: rename the conversation and register the session guidance. The
-    // task text itself is stored on the task record and replayed with the
-    // execution instruction.
+    // Success: give a still-untitled conversation the task's title (one that
+    // has a title keeps it) and register the session guidance. The task text
+    // itself is stored on the task record and replayed with the execution
+    // instruction.
     renameSession(session, created.title)
     guidance.register(agent, created)
     return { kind: 'reject' }

@@ -92,7 +92,7 @@ DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
 ## 使用
 
 1. 在任意对话输入框输入 `/闲时任务`（或从 `/` 指令菜单选「闲时任务」）回车开启。
-2. 工具条出现「闲时任务 ×」标签；写下任务描述回车，任务入队且**不会产生模型回复**。会话标题自动改为任务标题本身（不加任何前缀，侧栏用月亮图标标记闲时会话）。
+2. 工具条出现「闲时任务 ×」标签；写下任务描述回车，任务入队且**不会产生模型回复**。还没有标题的对话（比如刚新开的）会以任务标题命名（不加任何前缀，侧栏用月亮图标标记闲时会话）；已有标题的对话保持原标题，不会被任务改掉。
 3. 输入框上方的状态卡可以展开查看详情、**修改**、**取消**；长任务默认预览四行，点击「展开完整任务」可滚动查看全文，再点「收起全文」返回预览。面板里也能操作。
 4. 到闲时（半价时段）任务在同一条对话里自动执行，对话中出现一张「插件状态更新」触发卡（不是冒充用户发出的消息）。
 5. 侧栏「闲时任务」面板查看队列和省钱统计；面板图标上的绿点表示有任务完成且未查看，点任务标题可跳到来源对话。
@@ -168,7 +168,7 @@ node --test
 
 Each model family carries its own built-in off-peak rule: DeepSeek bills half price outside weekday 09:00–12:00 and 14:00–18:00 Beijing time (holidays excluded), and the GLM Coding Plan credits calls at 50% outside weekday 14:00–18:00 (UTC+8). A task is scheduled on the calendar of the model its conversation uses, so this plugin turns "I'll deal with it later" into a queue:
 
-1. In any conversation type `/闲时任务` — this only *arms* the composer; it makes **no model call**. Write the task and press Enter: the Host intercepts it in `agent/pre-step`, stores it, and ends the turn at zero cost.
+1. In any conversation type `/闲时任务` — this only *arms* the composer; it makes **no model call**. Write the task and press Enter: the Host intercepts it in `agent/pre-step`, stores it, and ends the turn at zero cost. A conversation that has no title yet is named after the task; one that already has a title keeps it.
 2. The task appears as a one-line status card above the composer, in the sidebar queue and in the queue panel. You can edit it (also at zero cost), cancel it, retry it, or run it immediately.
 3. During that model's off-peak hours the scheduler runs the task **in the same conversation**, waking the agent with a plugin status card that carries the task text and images. Savings are estimated per family — DeepSeek in CNY from the official price table, GLM in Coding-Plan credits from the official coefficients × measured tokens (no network calls) — and reported in the stats tab.
 

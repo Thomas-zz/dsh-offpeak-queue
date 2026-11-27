@@ -4,7 +4,8 @@
  * Covers message extraction/validation, the content blocks carried on the task
  * (the plugin never writes the creation message into the session log, because
  * only the Agent loop may open a log's surface with its protected system head),
- * the reject path, the fallback `next()` path, and idempotency after disarm.
+ * the reject path, the fallback `next()` path, idempotency after disarm, and
+ * when a conversation is (and is never) named after the task.
  */
 
 import test from 'node:test'
@@ -45,9 +46,12 @@ function captureLogger() {
 /**
  * Build a pre-step fixture over a temp store and the real controller.
  *
+ * @param {{titles?: Record<string, string>, titleGet?: boolean}} [options] -
+ *   `titles` seeds conversations that already carry a title; `titleGet: false`
+ *   removes `get` from the title service stand-in.
  * @returns {object} fixture.
  */
-function fixture() {
+function fixture(options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'offpeak-prestep-'))
   const logger = captureLogger()
   const store = createStore({ dataFile: path.join(dir, 'queue.json'), logger, now: () => NOW })
@@ -88,15 +92,23 @@ function fixture() {
     },
   })
   const titleCalls = []
+  // Conversation titles as the Host's `sessionTitle` service holds them:
+  // `get` reads the map, `rename` writes it.
+  const titles = new Map(Object.entries(options.titles ?? {}))
   const ctx = {
     get(name) {
       if (name === 'sessionTitle') {
-        return {
+        const service = {
           rename(session, title) {
             titleCalls.push([session.id, title])
+            titles.set(session.id, title)
             return { title }
           },
         }
+        if (options.titleGet !== false) {
+          service.get = (session) => (titles.has(session.id) ? { title: titles.get(session.id) } : undefined)
+        }
+        return service
       }
       return undefined
     },
@@ -105,7 +117,7 @@ function fixture() {
     },
   }
   const prestep = createPrestep({ ctx, store, guidance, controller, logger })
-  return { prestep, controller, store, engine, guidance, titleCalls, logger, dir }
+  return { prestep, controller, store, engine, guidance, titleCalls, titles, logger, dir }
 }
 
 /**
@@ -254,7 +266,7 @@ test('a valid description creates the task, disarms, renames, and rejects withou
   assert.equal(task.cwd, '/abs/work')
   assert.equal(task.title, '整理书稿目录，输出 5 条要点')
   assert.equal(store.getLifetime().zeroCallCreations, 1)
-  assert.deepEqual(titleCalls, [['session-valid', '整理书稿目录，输出 5 条要点']], 'trailing punctuation is trimmed for the title')
+  assert.deepEqual(titleCalls, [['session-valid', '整理书稿目录，输出 5 条要点']], 'an untitled conversation takes the task title (trailing punctuation trimmed)')
   assert.equal(guidance.registered.length, 1)
   await new Promise((resolve) => setTimeout(resolve, 5))
   assert.equal(engine.ticks >= 1, true, 'creation kicks the scheduler on the next macrotask')
@@ -297,6 +309,48 @@ test('the renamed conversation title is truncated to keep the sidebar readable',
   assert.ok(renamed.endsWith('…'))
   const task = store.listTasks()[0]
   assert.ok(task.title.length > 40, 'the persisted task title keeps up to 120 chars')
+})
+
+test('queuing inside a conversation that already has a title never relabels it', async () => {
+  // The title may be one the user typed or one the Host derived from an
+  // earlier message: either way it stays.
+  const { prestep, store, guidance, titleCalls, titles } = fixture({ titles: { 'session-titled': '周会纪要' } })
+  const { agent, appended } = fakeAgent('session-titled')
+  arm(store, 'session-titled')
+  const decision = await prestep.handle(
+    { agent, messages: [claimedMessage('整理访谈记录')] },
+    () => Promise.resolve({ kind: 'enter', messages: [] }),
+  )
+  assert.deepEqual(decision, { kind: 'reject' }, 'creation is still zero-call')
+  assert.deepEqual(appended, [], 'nothing is written to the session log')
+  assert.equal(store.counts().total, 1, 'the task is still created')
+  assert.equal(store.listTasks()[0].title, '整理访谈记录', 'the task keeps its own title')
+  assert.equal(store.getArmed('session-titled'), null, 'the session still disarms')
+  assert.equal(guidance.registered.length, 1, 'the session guidance is still registered')
+  assert.deepEqual(titleCalls, [], 'the conversation is not renamed')
+  assert.equal(titles.get('session-titled'), '周会纪要', 'the existing title is untouched')
+})
+
+test('a conversation named by one task keeps that title when a second task is queued in it', async () => {
+  const { prestep, store, titleCalls, titles } = fixture()
+  const { agent } = fakeAgent('session-twice')
+  arm(store, 'session-twice')
+  await prestep.handle({ agent, messages: [claimedMessage('整理访谈记录')] }, () => Promise.resolve({ kind: 'enter', messages: [] }))
+  assert.deepEqual(titleCalls, [['session-twice', '整理访谈记录']], 'an untitled conversation takes the first task’s title')
+  arm(store, 'session-twice')
+  await prestep.handle({ agent, messages: [claimedMessage('汇总本周反馈')] }, () => Promise.resolve({ kind: 'enter', messages: [] }))
+  assert.equal(store.counts().total, 2)
+  assert.equal(titleCalls.length, 1, 'the second task does not relabel the conversation')
+  assert.equal(titles.get('session-twice'), '整理访谈记录')
+})
+
+test('the conversation is left alone when its current title cannot be read', async () => {
+  const { prestep, store, titleCalls } = fixture({ titleGet: false })
+  const { agent } = fakeAgent('session-opaque')
+  arm(store, 'session-opaque')
+  await prestep.handle({ agent, messages: [claimedMessage('整理访谈记录')] }, () => Promise.resolve({ kind: 'enter', messages: [] }))
+  assert.equal(store.counts().total, 1, 'the task is still created')
+  assert.deepEqual(titleCalls, [], 'renaming without knowing the current title could overwrite it')
 })
 
 test('creation failures fall back to next() without appending (no duplicate message)', async () => {

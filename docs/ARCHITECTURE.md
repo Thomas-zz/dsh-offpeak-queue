@@ -5,6 +5,18 @@ agent tool) and the Client half (composer chip, task bar, panel, stats) behave.
 It describes the v2 conversation-first design; earlier v1 notes were internal and are
 not published.
 
+> **Title kept (2026-11-27):** queuing a task no longer relabels a conversation
+> that already has a title (GitHub issue: a conversation titled by its first
+> message was renamed to the task's title). Creation now calls
+> `sessionTitle.rename()` only while `sessionTitle.get(session)` reports no
+> title. A conversation opened just for a task is still named after it; one the
+> user typed a title for, inherited from a fork, or had the Host derive from an
+> earlier message keeps it. When the current title cannot be read, the
+> conversation is left alone. Creation remains the only place the plugin touches
+> a title: the execution wake message is not a human message
+> (`source.kind = 'cordis-host-runner'`), so the Host derives no title from it.
+> No settings or data-format change.
+
 > **Multi-family update (v7, 2026-11-06):** the queue now schedules per **model
 > family** — DeepSeek (calendar from the persisted settings) and GLM (built-in
 > Coding Plan rule, `host/families.js`). `agent/pre-step` classifies the
@@ -193,8 +205,9 @@ Host side:
      `{ kind: 'reject' }`** — the agent loop then ends the turn as `blocked` with **no model request**
      (`turn/start` was already appended, so the session is non-blank and visible in the sidebar).
    - Best-effort after creating: `ctx.get('sessionTitle')?.rename(session, title)`（任务标题本身，
-     不加 `闲时任务 · ` 之类前缀）；register the session-scoped model guidance (§5) on `agent.ctx`;
-     notify nothing else.
+     不加 `闲时任务 · ` 之类前缀）— only while `sessionTitle.get(session)` reports no title; a
+     conversation that already has one keeps it. Then register the session-scoped model guidance (§5)
+     on `agent.ctx`; notify nothing else.
    - Failures inside the listener must `return next()` (never break the user's turn) and record
      `lastError`/log.
    - The handler must be idempotent for the same session: after creating one task, disarm so later
